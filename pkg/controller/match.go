@@ -7,17 +7,30 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
 	"k8s.io/klog/v2"
 
 	"github.com/steigr/kubeling/pkg/config"
 )
 
-// matches reports whether node satisfies m. An unset NodeSelector or
-// ProviderIDPattern imposes no constraint; when both are set, node must
-// satisfy both.
+// matches reports whether node satisfies m. An unset NodeSelector,
+// SelectorTerms or ProviderIDPattern imposes no constraint; node must
+// satisfy every one that is set.
 func matches(node *corev1.Node, m config.Match) bool {
 	if len(m.NodeSelector) > 0 {
 		if !labels.SelectorFromSet(labels.Set(m.NodeSelector)).Matches(labels.Set(node.Labels)) {
+			return false
+		}
+	}
+	if len(m.SelectorTerms) > 0 {
+		ns, err := nodeaffinity.NewNodeSelector(&corev1.NodeSelector{NodeSelectorTerms: m.SelectorTerms})
+		if err != nil {
+			// Already validated by config.Config.Validate, like
+			// providerIDPattern below.
+			klog.ErrorS(err, "rule has invalid selectorTerms, treating as non-matching")
+			return false
+		}
+		if !ns.Match(node) {
 			return false
 		}
 	}

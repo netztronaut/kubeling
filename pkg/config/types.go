@@ -6,14 +6,22 @@ package config
 import (
 	"fmt"
 	"regexp"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
 )
 
-// Match describes which Nodes a rule applies to. Both constraints are
-// optional; an unset one imposes no restriction. When both are set, a Node
-// must satisfy both (logical AND).
+// Match describes which Nodes a rule applies to. Every constraint is
+// optional; an unset one imposes no restriction. When several are set, a
+// Node must satisfy all of them (logical AND).
+//
+// SelectorTerms has the shape and semantics of a Pod's required node
+// affinity: the terms are ORed, and the requirements within one term are
+// ANDed.
 type Match struct {
-	NodeSelector      map[string]string `json:"nodeSelector,omitempty"`
-	ProviderIDPattern string            `json:"providerIDPattern,omitempty"`
+	NodeSelector      map[string]string         `json:"nodeSelector,omitempty"`
+	SelectorTerms     []corev1.NodeSelectorTerm `json:"selectorTerms,omitempty"`
+	ProviderIDPattern string                    `json:"providerIDPattern,omitempty"`
 }
 
 // ExternalIPRule adds ExternalIPs to matching Nodes' status.addresses. The
@@ -49,32 +57,57 @@ type Config struct {
 }
 
 // Validate reports an error if any rule's ProviderIDPattern doesn't
-// compile as a regular expression.
+// compile as a regular expression or its SelectorTerms are malformed.
 func (c Config) Validate() error {
 	for id, r := range c.ExternalIPs {
-		if err := validatePattern(r.ProviderIDPattern); err != nil {
+		if err := validateMatch(r.Match); err != nil {
 			return fmt.Errorf("externalIPs rule %q: %w", id, err)
 		}
 	}
 	for id, r := range c.Labels {
-		if err := validatePattern(r.ProviderIDPattern); err != nil {
+		if err := validateMatch(r.Match); err != nil {
 			return fmt.Errorf("labels rule %q: %w", id, err)
 		}
 	}
 	for id, r := range c.Annotations {
-		if err := validatePattern(r.ProviderIDPattern); err != nil {
+		if err := validateMatch(r.Match); err != nil {
 			return fmt.Errorf("annotations rule %q: %w", id, err)
 		}
 	}
 	return nil
 }
 
-func validatePattern(pattern string) error {
-	if pattern == "" {
+func validateMatch(m Match) error {
+	if m.ProviderIDPattern != "" {
+		if _, err := regexp.Compile(m.ProviderIDPattern); err != nil {
+			return fmt.Errorf("invalid providerIDPattern %q: %w", m.ProviderIDPattern, err)
+		}
+	}
+	return validateSelectorTerms(m.SelectorTerms)
+}
+
+// validateSelectorTerms rejects terms the scheduler would accept but that
+// can never do what was meant: an empty term (which silently matches
+// nothing) and a matchFields key other than metadata.name (the only Node
+// field that can be selected on, so any other key silently never matches).
+// Everything else — operators, values, label keys — is checked by parsing
+// the terms exactly as the scheduler does.
+func validateSelectorTerms(terms []corev1.NodeSelectorTerm) error {
+	if len(terms) == 0 {
 		return nil
 	}
-	if _, err := regexp.Compile(pattern); err != nil {
-		return fmt.Errorf("invalid providerIDPattern %q: %w", pattern, err)
+	for i, term := range terms {
+		if len(term.MatchExpressions) == 0 && len(term.MatchFields) == 0 {
+			return fmt.Errorf("selectorTerms[%d]: term must set matchExpressions or matchFields", i)
+		}
+		for j, req := range term.MatchFields {
+			if req.Key != "metadata.name" {
+				return fmt.Errorf("selectorTerms[%d].matchFields[%d]: unsupported key %q, only metadata.name is supported", i, j, req.Key)
+			}
+		}
+	}
+	if _, err := nodeaffinity.NewNodeSelector(&corev1.NodeSelector{NodeSelectorTerms: terms}); err != nil {
+		return fmt.Errorf("invalid selectorTerms: %w", err)
 	}
 	return nil
 }

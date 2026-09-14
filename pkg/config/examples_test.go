@@ -43,6 +43,9 @@ func TestExamples(t *testing.T) {
 		if len(cfg.ExternalIPs) == 0 || len(cfg.Labels) == 0 || len(cfg.Annotations) == 0 {
 			t.Errorf("example should demonstrate every rule map, got %+v", cfg)
 		}
+		if len(cfg.Labels["edge"].SelectorTerms) == 0 {
+			t.Errorf("example should demonstrate selectorTerms, got %+v", cfg.Labels)
+		}
 	})
 }
 

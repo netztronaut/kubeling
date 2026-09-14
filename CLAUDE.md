@@ -16,7 +16,8 @@ three things:
    each from its own independently-reconciled rule map read live from a
    ConfigMap (never mounted as a volume — read via the Kubernetes API so
    changes apply within seconds, no pod restart). Every rule, in every map,
-   is matched by `nodeSelector` and/or a regex against `providerID`.
+   is matched by any combination (ANDed) of `nodeSelector`, node-affinity-style
+   `selectorTerms`, and a regex against `providerID`.
 3. Each of those three domains maintains its own `kubeling.io/` NodeCondition
    (`Labeled`, `Annotated`, `ExternalIPsApplied`) — present on a Node only
    while at least one rule for that domain currently matches it, tracking
@@ -80,7 +81,8 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
   informer (field-selected by name) that parses the `config.yaml` key with
   `config.Parse` and stores the result in an `atomic.Pointer`. `Parse`
   decodes strictly (`yaml.UnmarshalStrict` — unknown keys are errors) and
-  runs `Config.Validate` (every `providerIDPattern` must compile); on either
+  runs `Config.Validate` (every `providerIDPattern` must compile, every
+  `selectorTerms` must parse as scheduler node-affinity terms); on either
   failure the previous configuration is kept. A missing key or deleted
   ConfigMap clears the configuration. `OnChange` is a caller-supplied hook
   fired on every successful load/clear. Only instantiated when
@@ -117,8 +119,9 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
   Pending/Applied/absent semantics as `MetadataController`.
 
 - **`pkg/controller/match.go`** — `matches(node, config.Match)` is the one
-  place nodeSelector/providerIDPattern matching happens (compiled patterns
-  are cached); `matchingIDs[T]` returns the sorted rule IDs matching a Node
+  place nodeSelector/selectorTerms/providerIDPattern matching happens
+  (`selectorTerms` are evaluated with the scheduler's own
+  `k8s.io/component-helpers/.../nodeaffinity`; compiled patterns are cached); `matchingIDs[T]` returns the sorted rule IDs matching a Node
   from any of the three rule maps.
 
 - **`pkg/controller/conditions.go`** — the three `kubeling.io/...`

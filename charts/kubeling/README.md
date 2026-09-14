@@ -62,6 +62,13 @@ config:
   labels:
     edge:
       providerIDPattern: '^custom://edge-'
+      selectorTerms:
+        - matchExpressions:
+            - key: topology.kubernetes.io/zone
+              operator: In
+              values:
+                - eu-central-1a
+                - eu-central-1b
       labels:
         environment: production
   annotations:

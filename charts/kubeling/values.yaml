@@ -51,7 +51,8 @@ extraArgs: []
 # -- Rule configuration, rendered with `toYaml` into the "config.yaml" key
 # of a ConfigMap this chart creates and points the controller at. It holds
 # up to three independent rule maps, each keyed by an arbitrary rule ID and
-# matched by nodeSelector and/or providerIDPattern (see the chart README and
+# matched by nodeSelector, selectorTerms and/or providerIDPattern — all
+# ANDed, selectorTerms as in a Pod's node affinity (see the chart README and
 # ci/rules-values.yaml for a complete example):
 # config:
 #   externalIPs:
@@ -63,6 +64,11 @@ extraArgs: []
 #   labels:
 #     edge:
 #       providerIDPattern: '^custom://edge-'
+#       selectorTerms:
+#         - matchExpressions:
+#             - key: topology.kubernetes.io/zone
+#               operator: In
+#               values: [eu-central-1a, eu-central-1b]
 #       labels:
 #         environment: production
 #   annotations:

@@ -29,8 +29,8 @@ where `--cloud-provider=external` is required by the kubelet/control plane
 but there's no cloud to integrate with.
 
 Optionally, it can also apply `externalIPs`, labels and annotations to Nodes
-based on rules read from a ConfigMap, each matched by `nodeSelector` and/or
-`providerID` regex — see [Rule configuration](#rule-configuration).
+based on rules read from a ConfigMap, each matched by `nodeSelector`,
+node-affinity-style `selectorTerms` and/or a `providerID` regex — see [Rule configuration](#rule-configuration).
 
 ## Images and charts
 
@@ -145,6 +145,13 @@ externalIPs:
 labels:
   edge:
     providerIDPattern: '^custom://edge-'
+    selectorTerms:
+      - matchExpressions:
+          - key: topology.kubernetes.io/zone
+            operator: In
+            values:
+              - eu-central-1a
+              - eu-central-1b
     labels:
       environment: production
 annotations:
@@ -158,15 +165,31 @@ annotations:
 Every rule, in every one of the three maps, is matched the same way:
 
 - `nodeSelector` — labels a Node must have for this rule to apply.
+- `selectorTerms` — a list of node selector terms, with exactly the shape
+  and semantics of a Pod's
+  `affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms`:
+  the terms are ORed, and the requirements within one term are ANDed. Each
+  term holds `matchExpressions` on Node labels (operators `In`, `NotIn`,
+  `Exists`, `DoesNotExist`, `Gt`, `Lt`) and/or `matchFields` on
+  `metadata.name` (operators `In`, `NotIn`, with exactly one value).
 - `providerIDPattern` — a Go regular expression matched against a Node's
   `spec.providerID`. A Node with no `providerID` yet never matches a rule
   that sets this.
 
-Both are optional; an unset one imposes no constraint. When a rule sets
-both, a Node must satisfy both to match it.
+All three are optional; an unset one imposes no constraint. When a rule sets
+several, a Node must satisfy every one of them to match it — e.g. a rule with
+both `nodeSelector` and `selectorTerms` matches only Nodes that have the
+`nodeSelector` labels *and* satisfy at least one term.
+
+Selecting on a label that a `labels` rule itself applies is self-reinforcing:
+applied labels are never removed automatically, so such a Node keeps
+matching even after the original reason is gone.
 
 The document is decoded strictly: unknown keys (a typo, or the retired
-`policies` schema) and `providerIDPattern`s that don't compile make the
+`policies` schema), `providerIDPattern`s that don't compile, and malformed
+`selectorTerms` (an empty term, an unknown operator, `In` without values, a
+non-integer `Gt`/`Lt` value, a `matchFields` key other than `metadata.name`)
+make the
 controller log an error and keep its previous configuration, rather than
 silently applying nothing.
 

@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 func TestConfigValidate(t *testing.T) {
 	t.Run("no rules is valid", func(t *testing.T) {
@@ -62,4 +67,80 @@ func TestConfigValidate(t *testing.T) {
 			t.Fatalf("expected an error for an unparseable regex")
 		}
 	})
+
+	validTerms := []corev1.NodeSelectorTerm{
+		{MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "topology.kubernetes.io/zone", Operator: corev1.NodeSelectorOpIn, Values: []string{"antarctica-east1", "antarctica-west1"}},
+		}},
+		{MatchFields: []corev1.NodeSelectorRequirement{
+			{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{"server-a"}},
+		}},
+	}
+
+	t.Run("valid selectorTerms are valid", func(t *testing.T) {
+		m := Match{SelectorTerms: validTerms}
+		cfg := Config{
+			ExternalIPs: map[string]ExternalIPRule{"a": {Match: m}},
+			Labels:      map[string]LabelRule{"b": {Match: m}},
+			Annotations: map[string]AnnotationRule{"c": {Match: m}},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	invalidTerms := map[string]corev1.NodeSelectorTerm{
+		"empty term": {},
+		"unknown operator": {MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "k", Operator: "Bogus", Values: []string{"v"}},
+		}},
+		"In without values": {MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "k", Operator: corev1.NodeSelectorOpIn},
+		}},
+		"Exists with values": {MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "k", Operator: corev1.NodeSelectorOpExists, Values: []string{"v"}},
+		}},
+		"Gt with non-integer": {MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "k", Operator: corev1.NodeSelectorOpGt, Values: []string{"many"}},
+		}},
+		"invalid label key": {MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "not a key!", Operator: corev1.NodeSelectorOpExists},
+		}},
+		"unsupported field key": {MatchFields: []corev1.NodeSelectorRequirement{
+			{Key: "spec.providerID", Operator: corev1.NodeSelectorOpIn, Values: []string{"x"}},
+		}},
+		"matchFields In with two values": {MatchFields: []corev1.NodeSelectorRequirement{
+			{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{"a", "b"}},
+		}},
+	}
+	for name, term := range invalidTerms {
+		t.Run("selectorTerms with "+name+" is rejected", func(t *testing.T) {
+			cfg := Config{Annotations: map[string]AnnotationRule{
+				"broken": {Match: Match{SelectorTerms: []corev1.NodeSelectorTerm{term}}},
+			}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected an error")
+			}
+			if !strings.Contains(err.Error(), `annotations rule "broken"`) {
+				t.Errorf("error should name the rule, got %v", err)
+			}
+		})
+	}
+}
+
+func TestParseRejectsUnknownSelectorTermKeys(t *testing.T) {
+	raw := `
+labels:
+  typo:
+    selectorTerms:
+      - matchExpression:
+          - key: k
+            operator: Exists
+    labels:
+      x: y
+`
+	if _, err := Parse([]byte(raw)); err == nil {
+		t.Fatalf("expected strict decoding to reject matchExpression")
+	}
 }
