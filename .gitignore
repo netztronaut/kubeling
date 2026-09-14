@@ -1,2 +1,9 @@
+# Build and test output
 /bin/
 *.test
+/cover.out
+
+# Local tool state
+/.remember/
+/.claude/worktrees/
+/.claude/settings.local.json
