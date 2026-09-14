@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: docker
+    runs-on: ubuntu-latest
     env:
       HELM_VERSION: v4.1.4
     steps:

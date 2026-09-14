@@ -41,7 +41,9 @@ make deploy VALUES=<file>      # helm upgrade --install in the current kube cont
 ```
 
 The repository is hosted on Forgejo at `git.example.com/platform/kubeling`;
-CI is `.forgejo/workflows/ci.yml` and just runs `make check`. Lint rules live
+CI is `.forgejo/workflows/ci.yml` and just runs `make check` on `runs-on:
+ubuntu-latest`, served by the forgejo-runner deployed to the example.com
+cluster from the `gitops/example` repo (`clusters/example.com/forgejo-runner/`). Lint rules live
 in `.golangci.yml` (notably: use `slices`, not `sort`). `go.mod` pins
 `toolchain go1.26.8` because the auto-selected go1.26.0 toolchain breaks
 coverage builds.
