@@ -11,22 +11,23 @@ helm install kubeling ./charts/kubeling \
   --namespace kube-system
 ```
 
-By default the chart schedules the controller on control-plane nodes
-(`nodeSelector: node-role.kubernetes.io/control-plane`) with tolerations for
-the control-plane and `node.cloudprovider.kubernetes.io/uninitialized`
-taints, and `hostNetwork: true`. This avoids the chicken-and-egg problem
+By default the chart prefers control-plane nodes (a soft node affinity on
+`node-role.kubernetes.io/control-plane`), tolerates the control-plane,
+`node.cloudprovider.kubernetes.io/uninitialized` and `not-ready` taints,
+and runs with `hostNetwork: true`. This avoids the chicken-and-egg problem
 where the controller manager itself is a pod that needs a Node to be
-initialized before it can be scheduled. If your control-plane nodes aren't
-schedulable, or you run a managed control plane, override
-`nodeSelector`/`tolerations` to target a fixed set of nodes you've
-initialized out of band:
+initialized before it can be scheduled, while still scheduling elsewhere
+when no control-plane node is available. To require specific nodes
+instead, set `nodeSelector` (or a required node affinity):
 
 ```sh
 helm install kubeling ./charts/kubeling \
   --namespace kube-system \
-  --set nodeSelector=null \
-  --set-json 'tolerations=[]'
+  --set-json 'nodeSelector={"node-role.kubernetes.io/control-plane":""}'
 ```
+
+With `hostNetwork`, the health port (`healthz.port`, default `10258`) must
+be free on the chosen node.
 
 ## Rule configuration
 
@@ -100,7 +101,7 @@ but nothing reads or writes through them while rule processing is off.
 | Key | Default | Description |
 | --- | --- | --- |
 | `replicaCount` | `1` | Number of replicas. Only one is active at a time; see `leaderElection`. |
-| `updateStrategy` | `RollingUpdate`, `maxSurge: 0`, `maxUnavailable: 1` | Deployment rollout strategy. Terminates a Pod before scheduling its replacement so rollouts don't deadlock on clusters where `nodeSelector` matches only as many nodes as there are replicas. |
+| `updateStrategy` | `RollingUpdate`, `maxSurge: 0`, `maxUnavailable: 1` | Deployment rollout strategy. Terminates a Pod before scheduling its replacement so rollouts don't deadlock (and don't clash on the host network port) on clusters with only as many suitable nodes as there are replicas. |
 | `image.repository` | `git.example.com/platform/kubeling` | Container image repository. |
 | `image.tag` | `""` (chart `appVersion`) | Container image tag. |
 | `image.pullPolicy` | `""` (Kubernetes default) | Image pull policy. Unset, Kubernetes pulls `latest` tags on every start and other tags only when missing. |
@@ -126,9 +127,9 @@ but nothing reads or writes through them while rule processing is off.
 | `resources` | `50m`/`32Mi` requests, `128Mi` memory limit | Container resource requests/limits. |
 | `hostNetwork` | `true` | Run the pod on the host network. |
 | `priorityClassName` | `system-cluster-critical` | Pod priority class. |
-| `nodeSelector` | control-plane nodes | Node selector for the Deployment. |
-| `tolerations` | control-plane / uninitialized / not-ready | Tolerations for the Deployment. |
-| `affinity` | `{}` | Affinity rules for the Deployment. |
+| `nodeSelector` | `{}` | Hard node selector for the Deployment. |
+| `tolerations` | control-plane / uninitialized / not-ready (`operator: Exists`) | Tolerations for the Deployment. |
+| `affinity` | preferred node affinity for control-plane nodes | Affinity rules for the Deployment. |
 | `nameOverride` / `fullnameOverride` | `""` | Override the generated chart/release name. |
 
 ## Testing

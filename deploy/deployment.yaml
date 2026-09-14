@@ -18,20 +18,28 @@ spec:
       serviceAccountName: kubeling
       priorityClassName: system-cluster-critical
       # Only one replica is active at a time (leader election). With
-      # hostNetwork, each replica needs its own control-plane node.
-      # Runs on control-plane nodes so it can start before other nodes have
-      # been initialized by this very controller. Adjust or remove the
-      # nodeSelector/tolerations below to match your cluster's node layout.
+      # hostNetwork, each replica needs a node with port 10258 free.
+      # Prefers control-plane nodes and tolerates the taints of Nodes that
+      # aren't initialized yet, so it can start before other nodes have been
+      # initialized by this very controller.
       hostNetwork: true
-      nodeSelector:
-        node-role.kubernetes.io/control-plane: ""
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
       tolerations:
         - key: node-role.kubernetes.io/control-plane
+          operator: Exists
           effect: NoSchedule
         - key: node.cloudprovider.kubernetes.io/uninitialized
-          value: "true"
+          operator: Exists
           effect: NoSchedule
         - key: node.kubernetes.io/not-ready
+          operator: Exists
           effect: NoSchedule
       containers:
         - name: kubeling

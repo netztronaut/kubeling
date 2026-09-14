@@ -77,17 +77,16 @@ Manifests are in [`deploy/`](deploy/):
 kubectl apply -f deploy/
 ```
 
-Both the chart and the plain manifests run the Deployment on control-plane
-nodes by default (`nodeSelector: node-role.kubernetes.io/control-plane`)
-with tolerations for the control-plane and
-`node.cloudprovider.kubernetes.io/uninitialized` taints, plus
-`hostNetwork: true`. This avoids the chicken-and-egg problem where the
-controller manager itself is a pod that needs a Node to be initialized
-before it can be scheduled. If your control-plane nodes aren't schedulable,
-or you run a managed control plane where you don't control those nodes,
-adjust `nodeSelector`/`tolerations` to fit your setup — for example
-scheduling it on a fixed set of worker nodes that you have initialized out
-of band.
+Both the chart and the plain manifests prefer control-plane nodes (a soft
+node affinity on `node-role.kubernetes.io/control-plane`), tolerate the
+control-plane, `node.cloudprovider.kubernetes.io/uninitialized` and
+`not-ready` taints, and run with `hostNetwork: true`. This avoids the
+chicken-and-egg problem where the controller manager itself is a pod that
+needs a Node to be initialized before it can be scheduled. Because the
+affinity is only a preference, the controller still schedules on clusters
+without schedulable control-plane nodes (e.g. managed control planes); set a
+`nodeSelector` or required node affinity if it must run on specific nodes.
+With `hostNetwork`, the health port (`10258`) has to be free on that node.
 
 ### Running kubelets with the external cloud provider
 

@@ -37,6 +37,9 @@ expect "default: uses the chart image repository" 'image: "git.example.com/platf
 reject "default: creates no ConfigMap" '^kind: ConfigMap$' "$out"
 reject "default: sets no CONFIGMAP env" 'name: CONFIGMAP' "$out"
 reject "default: sets no imagePullPolicy" 'imagePullPolicy:' "$out"
+reject "default: requires no nodeSelector" 'nodeSelector:' "$out"
+expect "default: prefers control-plane nodes" 'preferredDuringSchedulingIgnoredDuringExecution:' "$out"
+expect "default: tolerates the control-plane taint" 'key: node-role.kubernetes.io/control-plane' "$out"
 
 out="$(render --values "$chart/ci/rules-values.yaml")"
 expect "config: creates the ConfigMap" '^kind: ConfigMap$' "$out"

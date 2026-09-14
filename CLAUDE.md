@@ -157,10 +157,10 @@ since there's nothing to gracefully drain.
 Cluster-specific values files don't belong in this repository; they live in
 the GitOps repository of the respective cluster.
 
-Both the chart and the plain manifests schedule the Deployment on
-control-plane nodes with `hostNetwork: true` and tolerations for the
-control-plane and `uninitialized` taints, to avoid the chicken-and-egg
-problem of the controller itself needing an initialized Node to be
-scheduled. Read README.md's Deploying section before changing scheduling —
+Both the chart and the plain manifests run the Deployment with
+`hostNetwork: true`, tolerations for the control-plane, `uninitialized` and
+`not-ready` taints, and a *preferred* (not required) node affinity for
+control-plane nodes, to avoid the chicken-and-egg problem of the controller
+itself needing an initialized Node to be scheduled. Read README.md's Deploying section before changing scheduling —
 the reasoning behind those defaults, and what to adjust for managed control
 planes, is documented there rather than in code.

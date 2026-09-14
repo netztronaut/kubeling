@@ -124,20 +124,31 @@ hostNetwork: true
 
 priorityClassName: system-cluster-critical
 
-# -- Runs on control-plane nodes by default so the controller can start
-# before other Nodes have been initialized by this very controller. Adjust
-# to fit clusters without schedulable control-plane nodes, e.g. a fixed set
-# of workers initialized out of band.
-nodeSelector:
-  node-role.kubernetes.io/control-plane: ""
+# -- Hard node selection. Empty by default: `affinity` below only prefers
+# control-plane nodes, so the controller still schedules on clusters
+# without (schedulable) control-plane nodes.
+nodeSelector: {}
 
+# -- Tolerates the control-plane taint and the taints of Nodes that aren't
+# initialized or ready yet, so the controller can start before other Nodes
+# have been initialized by this very controller.
 tolerations:
   - key: node-role.kubernetes.io/control-plane
+    operator: Exists
     effect: NoSchedule
   - key: node.cloudprovider.kubernetes.io/uninitialized
-    value: "true"
+    operator: Exists
     effect: NoSchedule
   - key: node.kubernetes.io/not-ready
+    operator: Exists
     effect: NoSchedule
 
-affinity: {}
+# -- Prefers (but doesn't require) control-plane nodes.
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
