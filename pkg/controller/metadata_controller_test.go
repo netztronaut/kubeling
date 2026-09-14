@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/steigr/kubeling/pkg/config"
 )
 
@@ -103,4 +105,135 @@ func TestResolveValues(t *testing.T) {
 			t.Errorf("got %+v, want %+v", got, want)
 		}
 	})
+}
+
+func TestLabelControllerReconcile(t *testing.T) {
+	edgeRule := config.LabelRule{
+		Match:  config.Match{NodeSelector: map[string]string{"zone": "edge"}},
+		Labels: map[string]string{"environment": "production"},
+	}
+
+	t.Run("applies matching rule from cold", func(t *testing.T) {
+		h := newHarness(t, node("edge-1", map[string]string{"zone": "edge"}))
+		c, err := NewLabelController(h.client, h.nodes, &staticConfig{config.Config{
+			Labels: map[string]config.LabelRule{"edge": edgeRule},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		writes, got := h.converge(c.reconcile, "edge-1")
+
+		// Pending condition, labels, Applied condition.
+		if writes != 3 {
+			t.Errorf("writes = %d, want 3", writes)
+		}
+		if got.Labels["environment"] != "production" {
+			t.Errorf("labels = %v, want environment=production", got.Labels)
+		}
+		cond := condition(got, LabeledConditionType)
+		if cond == nil || cond.Status != corev1.ConditionTrue || cond.Reason != "Applied" {
+			t.Errorf("condition = %+v, want Applied", cond)
+		}
+	})
+
+	t.Run("overwrites a differing value", func(t *testing.T) {
+		h := newHarness(t, node("edge-1", map[string]string{"zone": "edge", "environment": "staging"}))
+		c, err := NewLabelController(h.client, h.nodes, &staticConfig{config.Config{
+			Labels: map[string]config.LabelRule{"edge": edgeRule},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, got := h.converge(c.reconcile, "edge-1")
+
+		if got.Labels["environment"] != "production" {
+			t.Errorf("labels = %v, want environment=production", got.Labels)
+		}
+	})
+
+	t.Run("leaves non-matching node untouched", func(t *testing.T) {
+		h := newHarness(t, node("core-1", map[string]string{"zone": "core"}))
+		c, err := NewLabelController(h.client, h.nodes, &staticConfig{config.Config{
+			Labels: map[string]config.LabelRule{"edge": edgeRule},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		writes, got := h.converge(c.reconcile, "core-1")
+
+		if writes != 0 {
+			t.Errorf("writes = %d, want 0", writes)
+		}
+		if condition(got, LabeledConditionType) != nil {
+			t.Errorf("unexpected condition on non-matching node")
+		}
+	})
+
+	for name, cfg := range map[string]config.Config{
+		"rule no longer matches": {Labels: map[string]config.LabelRule{"other": {
+			Match:  config.Match{NodeSelector: map[string]string{"zone": "core"}},
+			Labels: map[string]string{"environment": "production"},
+		}}},
+		"all rules removed": {},
+	} {
+		t.Run("clears condition but keeps labels when "+name, func(t *testing.T) {
+			h := newHarness(t, node("edge-1", map[string]string{"zone": "edge"}))
+			source := &staticConfig{config.Config{Labels: map[string]config.LabelRule{"edge": edgeRule}}}
+			c, err := NewLabelController(h.client, h.nodes, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.converge(c.reconcile, "edge-1")
+
+			source.cfg = cfg
+			writes, got := h.converge(c.reconcile, "edge-1")
+
+			if writes != 1 {
+				t.Errorf("writes = %d, want 1", writes)
+			}
+			if condition(got, LabeledConditionType) != nil {
+				t.Errorf("condition still present after rule stopped matching")
+			}
+			if got.Labels["environment"] != "production" {
+				t.Errorf("applied label was removed: %v", got.Labels)
+			}
+		})
+	}
+}
+
+func TestAnnotationControllerReconcile(t *testing.T) {
+	h := newHarness(t, nodeWithName(nodeWithProviderID("custom://edge-1"), "edge-1"))
+	c, err := NewAnnotationController(h.client, h.nodes, &staticConfig{config.Config{
+		Annotations: map[string]config.AnnotationRule{"edge": {
+			Match:       config.Match{ProviderIDPattern: `^custom://edge-`},
+			Annotations: map[string]string{"example.com/rack": "r42"},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writes, got := h.converge(c.reconcile, "edge-1")
+
+	if writes != 3 {
+		t.Errorf("writes = %d, want 3", writes)
+	}
+	if got.Annotations["example.com/rack"] != "r42" {
+		t.Errorf("annotations = %v, want example.com/rack=r42", got.Annotations)
+	}
+	if len(got.Labels) != 0 {
+		t.Errorf("annotation controller touched labels: %v", got.Labels)
+	}
+	cond := condition(got, AnnotatedConditionType)
+	if cond == nil || cond.Status != corev1.ConditionTrue {
+		t.Errorf("condition = %+v, want Applied", cond)
+	}
+}
+
+func nodeWithName(n *corev1.Node, name string) *corev1.Node {
+	n.Name = name
+	return n
 }

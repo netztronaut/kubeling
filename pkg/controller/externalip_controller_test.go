@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/steigr/kubeling/pkg/config"
 )
 
 func TestMergeExternalIPs(t *testing.T) {
@@ -143,5 +145,68 @@ func TestMergeExternalIPsDoesNotMutateSharedBackingArray(t *testing.T) {
 	}
 	if len(out) != 2 {
 		t.Fatalf("got %d addresses, want 2", len(out))
+	}
+}
+
+func TestExternalIPControllerReconcile(t *testing.T) {
+	edge := func() *corev1.Node {
+		n := node("edge-1", map[string]string{"zone": "edge"})
+		n.Status.Addresses = []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+			{Type: corev1.NodeExternalIP, Address: "198.51.100.7"},
+		}
+		return n
+	}
+	rules := map[string]config.ExternalIPRule{
+		"edge-v4": {
+			Match:       config.Match{NodeSelector: map[string]string{"zone": "edge"}},
+			ExternalIPs: []string{"203.0.113.10"},
+		},
+		"edge-v6": {
+			Match:       config.Match{NodeSelector: map[string]string{"zone": "edge"}},
+			ExternalIPs: []string{"2001:db8::10"},
+		},
+	}
+
+	h := newHarness(t, edge())
+	source := &staticConfig{config.Config{ExternalIPs: rules}}
+	c, err := NewExternalIPController(h.client, h.nodes, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writes, got := h.converge(c.reconcile, "edge-1")
+
+	if writes != 3 {
+		t.Errorf("writes = %d, want 3", writes)
+	}
+	want := []corev1.NodeAddress{
+		{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+		{Type: corev1.NodeExternalIP, Address: "2001:db8::10"},
+		{Type: corev1.NodeExternalIP, Address: "198.51.100.7"},
+		{Type: corev1.NodeExternalIP, Address: "203.0.113.10"},
+	}
+	if !reflect.DeepEqual(got.Status.Addresses, want) {
+		t.Errorf("addresses = %+v, want %+v", got.Status.Addresses, want)
+	}
+	cond := condition(got, ExternalIPsAppliedConditionType)
+	if cond == nil || cond.Status != corev1.ConditionTrue {
+		t.Fatalf("condition = %+v, want Applied", cond)
+	}
+	if cond.Message != "Applied from matching rule(s): edge-v4, edge-v6." {
+		t.Errorf("condition message = %q", cond.Message)
+	}
+
+	source.cfg = config.Config{}
+	writes, got = h.converge(c.reconcile, "edge-1")
+
+	if writes != 1 {
+		t.Errorf("writes after removing rules = %d, want 1", writes)
+	}
+	if condition(got, ExternalIPsAppliedConditionType) != nil {
+		t.Errorf("condition still present after all rules were removed")
+	}
+	if !reflect.DeepEqual(got.Status.Addresses, want) {
+		t.Errorf("applied addresses were changed: %+v", got.Status.Addresses)
 	}
 }
