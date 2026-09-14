@@ -5,19 +5,12 @@ import (
 	"fmt"
 	"net"
 	"sort"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
-	corev1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
 	"github.com/steigr/kubeling/pkg/config"
@@ -33,95 +26,22 @@ import (
 // absent while no rule matches, Pending while a match exists but hasn't
 // been fully applied yet, Applied once it has.
 type ExternalIPController struct {
-	client  kubernetes.Interface
-	watcher *config.Watcher
-	lister  corev1listers.NodeLister
-	synced  cache.InformerSynced
-	queue   workqueue.TypedRateLimitingInterface[string]
+	*nodeQueue
+	client kubernetes.Interface
+	config ConfigSource
 }
 
 // NewExternalIPController builds an ExternalIPController. The Node
 // informer is owned by the caller (typically a shared informer factory)
 // and must be started separately.
-func NewExternalIPController(client kubernetes.Interface, nodes corev1informers.NodeInformer, watcher *config.Watcher) *ExternalIPController {
-	c := &ExternalIPController{
-		client:  client,
-		watcher: watcher,
-		lister:  nodes.Lister(),
-		synced:  nodes.Informer().HasSynced,
-		queue:   workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
-	}
-
-	nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.enqueue,
-		UpdateFunc: func(_, new interface{}) { c.enqueue(new) },
-	})
-
-	return c
-}
-
-func (c *ExternalIPController) enqueue(obj interface{}) {
-	key, err := cache.MetaNamespaceKeyFunc(obj)
+func NewExternalIPController(client kubernetes.Interface, nodes corev1informers.NodeInformer, source ConfigSource) (*ExternalIPController, error) {
+	c := &ExternalIPController{client: client, config: source}
+	q, err := newNodeQueue("externalIPs", nodes, c.reconcile)
 	if err != nil {
-		utilruntime.HandleError(err)
-		return
+		return nil, err
 	}
-	c.queue.Add(key)
-}
-
-// EnqueueAll re-evaluates every known Node, e.g. after the configuration
-// changes. Exported so a config.Watcher's OnChange hook can call it.
-func (c *ExternalIPController) EnqueueAll() {
-	nodes, err := c.lister.List(labels.Everything())
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("listing nodes to re-enqueue: %w", err))
-		return
-	}
-	for _, node := range nodes {
-		c.queue.Add(node.Name)
-	}
-}
-
-// Run starts the reconcile workers, blocking until ctx is canceled.
-func (c *ExternalIPController) Run(ctx context.Context, workers int) error {
-	defer utilruntime.HandleCrash()
-	defer c.queue.ShutDown()
-
-	klog.InfoS("starting externalIP controller")
-
-	if !cache.WaitForCacheSync(ctx.Done(), c.synced) {
-		return fmt.Errorf("failed to wait for node cache to sync")
-	}
-
-	for i := 0; i < workers; i++ {
-		go wait.UntilWithContext(ctx, c.runWorker, time.Second)
-	}
-
-	<-ctx.Done()
-	klog.InfoS("stopping externalIP controller")
-	return nil
-}
-
-func (c *ExternalIPController) runWorker(ctx context.Context) {
-	for c.processNextItem(ctx) {
-	}
-}
-
-func (c *ExternalIPController) processNextItem(ctx context.Context) bool {
-	key, shutdown := c.queue.Get()
-	if shutdown {
-		return false
-	}
-	defer c.queue.Done(key)
-
-	if err := c.reconcile(ctx, key); err != nil {
-		utilruntime.HandleError(fmt.Errorf("reconciling externalIPs for node %q: %w", key, err))
-		c.queue.AddRateLimited(key)
-		return true
-	}
-
-	c.queue.Forget(key)
-	return true
+	c.nodeQueue = q
+	return c, nil
 }
 
 // reconcile applies at most one change per call: clearing a stale
@@ -130,12 +50,6 @@ func (c *ExternalIPController) processNextItem(ctx context.Context) bool {
 // Node's resourceVersion, which the informer observes and re-enqueues, so
 // the next step follows on a fresh object.
 func (c *ExternalIPController) reconcile(ctx context.Context, key string) error {
-	cfg := c.watcher.Current()
-	rules := cfg.ExternalIPs
-	if len(rules) == 0 {
-		return nil
-	}
-
 	node, err := c.lister.Get(key)
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -144,10 +58,12 @@ func (c *ExternalIPController) reconcile(ctx context.Context, key string) error 
 		return err
 	}
 
+	// An empty rule map matches nothing, which still has to clear a
+	// condition left behind by rules that have since been removed.
+	rules := c.config.Current().ExternalIPs
 	matched := matchingIDs(node, rules, func(r config.ExternalIPRule) config.Match { return r.Match })
-
 	if len(matched) == 0 {
-		return c.ensureConditionAbsent(ctx, node)
+		return ensureConditionAbsent(ctx, c.client, node, ExternalIPsAppliedConditionType)
 	}
 
 	var externalIPs []string
@@ -157,11 +73,11 @@ func (c *ExternalIPController) reconcile(ctx context.Context, key string) error 
 	newAddresses, changed := mergeExternalIPs(node.Status.Addresses, externalIPs)
 
 	if !changed {
-		return c.ensureCondition(ctx, node, appliedCondition(ExternalIPsAppliedConditionType, matched))
+		return ensureCondition(ctx, c.client, node, appliedCondition(ExternalIPsAppliedConditionType, matched))
 	}
 
-	if !conditionUpToDate(node, pendingCondition(ExternalIPsAppliedConditionType, matched)) {
-		return c.ensureCondition(ctx, node, pendingCondition(ExternalIPsAppliedConditionType, matched))
+	if pending := pendingCondition(ExternalIPsAppliedConditionType, matched); !conditionUpToDate(node, pending) {
+		return ensureCondition(ctx, c.client, node, pending)
 	}
 
 	updated := node.DeepCopy()
@@ -173,38 +89,6 @@ func (c *ExternalIPController) reconcile(ctx context.Context, key string) error 
 		return fmt.Errorf("updating node %q externalIPs: %w", node.Name, err)
 	}
 	klog.InfoS("applied node externalIPs", "node", node.Name, "rules", matched, "externalIPs", externalIPs)
-	return nil
-}
-
-func (c *ExternalIPController) ensureCondition(ctx context.Context, node *corev1.Node, desired corev1.NodeCondition) error {
-	if conditionUpToDate(node, desired) {
-		return nil
-	}
-	updated := node.DeepCopy()
-	setCondition(updated, desired)
-	if _, err := c.client.CoreV1().Nodes().UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
-		if apierrors.IsConflict(err) {
-			return nil
-		}
-		return fmt.Errorf("updating node %q externalIPs condition: %w", node.Name, err)
-	}
-	klog.InfoS("updated node condition", "domain", "externalIPs", "node", node.Name, "status", desired.Status, "reason", desired.Reason)
-	return nil
-}
-
-func (c *ExternalIPController) ensureConditionAbsent(ctx context.Context, node *corev1.Node) error {
-	if !hasCondition(node, ExternalIPsAppliedConditionType) {
-		return nil
-	}
-	updated := node.DeepCopy()
-	removeCondition(updated, ExternalIPsAppliedConditionType)
-	if _, err := c.client.CoreV1().Nodes().UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
-		if apierrors.IsConflict(err) {
-			return nil
-		}
-		return fmt.Errorf("clearing node %q externalIPs condition: %w", node.Name, err)
-	}
-	klog.InfoS("cleared node condition, no rule matches", "domain", "externalIPs", "node", node.Name)
 	return nil
 }
 

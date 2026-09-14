@@ -56,7 +56,7 @@ func main() {
 	flag.DurationVar(&resyncPeriod, "resync-period", 10*time.Minute, "Node and ConfigMap informer resync period.")
 	flag.IntVar(&workers, "workers", 2, "Number of node reconcile workers.")
 	flag.StringVar(&healthAddr, "health-addr", ":10258", "Address to serve /healthz on.")
-	flag.StringVar(&configMapRef, "configmap", os.Getenv("CONFIGMAP"), "ConfigMap holding policy configuration, as \"(namespace/)name\". The namespace defaults to this controller's own namespace when omitted. Read via the Kubernetes API, never mounted as a volume. Leave empty to disable policy processing. Defaults to the CONFIGMAP environment variable.")
+	flag.StringVar(&configMapRef, "configmap", os.Getenv("CONFIGMAP"), "ConfigMap holding the rule configuration, as \"(namespace/)name\". The namespace defaults to this controller's own namespace when omitted. Read via the Kubernetes API, never mounted as a volume. Leave empty to disable rule processing. Defaults to the CONFIGMAP environment variable.")
 	flag.Parse()
 
 	restConfig, err := loadConfig(kubeconfig)
@@ -79,7 +79,11 @@ func main() {
 	factory := informers.NewSharedInformerFactory(client, resyncPeriod)
 	nodeInformer := factory.Core().V1().Nodes()
 
-	nc := controller.NewNodeController(client, nodeInformer, providerName)
+	nc, err := controller.NewNodeController(client, nodeInformer, providerName)
+	if err != nil {
+		klog.ErrorS(err, "failed to build node controller")
+		os.Exit(1)
+	}
 
 	var (
 		watcher *config.Watcher
@@ -92,10 +96,22 @@ func main() {
 		if cmNamespace == "" {
 			cmNamespace = config.OwnNamespace()
 		}
-		watcher = config.NewWatcher(client, cmNamespace, cmName, resyncPeriod)
-		lc = controller.NewLabelController(client, nodeInformer, watcher)
-		ac = controller.NewAnnotationController(client, nodeInformer, watcher)
-		eic = controller.NewExternalIPController(client, nodeInformer, watcher)
+		if watcher, err = config.NewWatcher(client, cmNamespace, cmName, resyncPeriod); err != nil {
+			klog.ErrorS(err, "failed to build configmap watcher")
+			os.Exit(1)
+		}
+		if lc, err = controller.NewLabelController(client, nodeInformer, watcher); err != nil {
+			klog.ErrorS(err, "failed to build label controller")
+			os.Exit(1)
+		}
+		if ac, err = controller.NewAnnotationController(client, nodeInformer, watcher); err != nil {
+			klog.ErrorS(err, "failed to build annotation controller")
+			os.Exit(1)
+		}
+		if eic, err = controller.NewExternalIPController(client, nodeInformer, watcher); err != nil {
+			klog.ErrorS(err, "failed to build externalIP controller")
+			os.Exit(1)
+		}
 		watcher.OnChange = func() {
 			lc.EnqueueAll()
 			ac.EnqueueAll()

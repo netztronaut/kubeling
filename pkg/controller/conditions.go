@@ -1,11 +1,15 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 )
 
 // Condition types this project maintains on Node status, one per
@@ -87,4 +91,41 @@ func hasCondition(node *corev1.Node, t corev1.NodeConditionType) bool {
 		}
 	}
 	return false
+}
+
+// ensureCondition writes desired onto node's status unless it is already
+// up to date. Conflicts are swallowed: the informer will observe the newer
+// Node and requeue it.
+func ensureCondition(ctx context.Context, client kubernetes.Interface, node *corev1.Node, desired corev1.NodeCondition) error {
+	if conditionUpToDate(node, desired) {
+		return nil
+	}
+	updated := node.DeepCopy()
+	setCondition(updated, desired)
+	if _, err := client.CoreV1().Nodes().UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("updating node %q condition %s: %w", node.Name, desired.Type, err)
+	}
+	klog.InfoS("updated node condition", "node", node.Name, "type", desired.Type, "status", desired.Status, "reason", desired.Reason)
+	return nil
+}
+
+// ensureConditionAbsent removes node's condition of type t, if present.
+// Conflicts are swallowed like in ensureCondition.
+func ensureConditionAbsent(ctx context.Context, client kubernetes.Interface, node *corev1.Node, t corev1.NodeConditionType) error {
+	if !hasCondition(node, t) {
+		return nil
+	}
+	updated := node.DeepCopy()
+	removeCondition(updated, t)
+	if _, err := client.CoreV1().Nodes().UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("clearing node %q condition %s: %w", node.Name, t, err)
+	}
+	klog.InfoS("cleared node condition, no rule matches", "node", node.Name, "type", t)
+	return nil
 }

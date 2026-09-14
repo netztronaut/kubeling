@@ -3,6 +3,7 @@ package controller
 import (
 	"regexp"
 	"sort"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -21,7 +22,7 @@ func matches(node *corev1.Node, m config.Match) bool {
 		}
 	}
 	if m.ProviderIDPattern != "" {
-		re, err := regexp.Compile(m.ProviderIDPattern)
+		re, err := compilePattern(m.ProviderIDPattern)
 		if err != nil {
 			// Already validated by config.Config.Validate when the watcher
 			// loaded this configuration; treat as non-matching if it
@@ -34,6 +35,23 @@ func matches(node *corev1.Node, m config.Match) bool {
 		}
 	}
 	return true
+}
+
+// patterns caches compiled providerIDPatterns, since every rule is matched
+// against every Node on each reconcile. Only a handful of distinct patterns
+// exist at any time, so the cache is never pruned.
+var patterns sync.Map // string -> *regexp.Regexp
+
+func compilePattern(pattern string) (*regexp.Regexp, error) {
+	if re, ok := patterns.Load(pattern); ok {
+		return re.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	patterns.Store(pattern, re)
+	return re, nil
 }
 
 // matchingIDs returns the IDs (sorted, for deterministic ordering) of

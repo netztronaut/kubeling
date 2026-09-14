@@ -3,19 +3,12 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
-	corev1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
 	"github.com/steigr/kubeling/pkg/config"
@@ -48,18 +41,16 @@ type metadataDomain[T any] struct {
 // rule matches, Pending while a match exists but hasn't been fully applied
 // yet, Applied once it has.
 type MetadataController[T any] struct {
-	domain  metadataDomain[T]
-	client  kubernetes.Interface
-	watcher *config.Watcher
-	lister  corev1listers.NodeLister
-	synced  cache.InformerSynced
-	queue   workqueue.TypedRateLimitingInterface[string]
+	*nodeQueue
+	domain metadataDomain[T]
+	client kubernetes.Interface
+	config ConfigSource
 }
 
 // NewLabelController builds a MetadataController that reconciles Node
 // labels from Config.Labels.
-func NewLabelController(client kubernetes.Interface, nodes corev1informers.NodeInformer, watcher *config.Watcher) *MetadataController[config.LabelRule] {
-	return newMetadataController(client, nodes, watcher, metadataDomain[config.LabelRule]{
+func NewLabelController(client kubernetes.Interface, nodes corev1informers.NodeInformer, source ConfigSource) (*MetadataController[config.LabelRule], error) {
+	return newMetadataController(client, nodes, source, metadataDomain[config.LabelRule]{
 		kind:          "labels",
 		conditionType: LabeledConditionType,
 		rules:         func(cfg config.Config) map[string]config.LabelRule { return cfg.Labels },
@@ -72,8 +63,8 @@ func NewLabelController(client kubernetes.Interface, nodes corev1informers.NodeI
 
 // NewAnnotationController builds a MetadataController that reconciles Node
 // annotations from Config.Annotations.
-func NewAnnotationController(client kubernetes.Interface, nodes corev1informers.NodeInformer, watcher *config.Watcher) *MetadataController[config.AnnotationRule] {
-	return newMetadataController(client, nodes, watcher, metadataDomain[config.AnnotationRule]{
+func NewAnnotationController(client kubernetes.Interface, nodes corev1informers.NodeInformer, source ConfigSource) (*MetadataController[config.AnnotationRule], error) {
+	return newMetadataController(client, nodes, source, metadataDomain[config.AnnotationRule]{
 		kind:          "annotations",
 		conditionType: AnnotatedConditionType,
 		rules:         func(cfg config.Config) map[string]config.AnnotationRule { return cfg.Annotations },
@@ -84,86 +75,14 @@ func NewAnnotationController(client kubernetes.Interface, nodes corev1informers.
 	})
 }
 
-func newMetadataController[T any](client kubernetes.Interface, nodes corev1informers.NodeInformer, watcher *config.Watcher, domain metadataDomain[T]) *MetadataController[T] {
-	c := &MetadataController[T]{
-		domain:  domain,
-		client:  client,
-		watcher: watcher,
-		lister:  nodes.Lister(),
-		synced:  nodes.Informer().HasSynced,
-		queue:   workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
-	}
-
-	nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.enqueue,
-		UpdateFunc: func(_, new interface{}) { c.enqueue(new) },
-	})
-
-	return c
-}
-
-func (c *MetadataController[T]) enqueue(obj interface{}) {
-	key, err := cache.MetaNamespaceKeyFunc(obj)
+func newMetadataController[T any](client kubernetes.Interface, nodes corev1informers.NodeInformer, source ConfigSource, domain metadataDomain[T]) (*MetadataController[T], error) {
+	c := &MetadataController[T]{domain: domain, client: client, config: source}
+	q, err := newNodeQueue(domain.kind, nodes, c.reconcile)
 	if err != nil {
-		utilruntime.HandleError(err)
-		return
+		return nil, err
 	}
-	c.queue.Add(key)
-}
-
-// EnqueueAll re-evaluates every known Node, e.g. after the configuration
-// changes. Exported so a config.Watcher's OnChange hook can call it.
-func (c *MetadataController[T]) EnqueueAll() {
-	nodes, err := c.lister.List(labels.Everything())
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("listing nodes to re-enqueue: %w", err))
-		return
-	}
-	for _, node := range nodes {
-		c.queue.Add(node.Name)
-	}
-}
-
-// Run starts the reconcile workers, blocking until ctx is canceled.
-func (c *MetadataController[T]) Run(ctx context.Context, workers int) error {
-	defer utilruntime.HandleCrash()
-	defer c.queue.ShutDown()
-
-	klog.InfoS("starting metadata controller", "domain", c.domain.kind)
-
-	if !cache.WaitForCacheSync(ctx.Done(), c.synced) {
-		return fmt.Errorf("failed to wait for node cache to sync")
-	}
-
-	for i := 0; i < workers; i++ {
-		go wait.UntilWithContext(ctx, c.runWorker, time.Second)
-	}
-
-	<-ctx.Done()
-	klog.InfoS("stopping metadata controller", "domain", c.domain.kind)
-	return nil
-}
-
-func (c *MetadataController[T]) runWorker(ctx context.Context) {
-	for c.processNextItem(ctx) {
-	}
-}
-
-func (c *MetadataController[T]) processNextItem(ctx context.Context) bool {
-	key, shutdown := c.queue.Get()
-	if shutdown {
-		return false
-	}
-	defer c.queue.Done(key)
-
-	if err := c.reconcile(ctx, key); err != nil {
-		utilruntime.HandleError(fmt.Errorf("reconciling %s for node %q: %w", c.domain.kind, key, err))
-		c.queue.AddRateLimited(key)
-		return true
-	}
-
-	c.queue.Forget(key)
-	return true
+	c.nodeQueue = q
+	return c, nil
 }
 
 // reconcile applies at most one change per call: clearing a stale
@@ -172,12 +91,6 @@ func (c *MetadataController[T]) processNextItem(ctx context.Context) bool {
 // resourceVersion, which the informer observes and re-enqueues, so the
 // next step follows on a fresh object.
 func (c *MetadataController[T]) reconcile(ctx context.Context, key string) error {
-	cfg := c.watcher.Current()
-	rules := c.domain.rules(cfg)
-	if len(rules) == 0 {
-		return nil
-	}
-
 	node, err := c.lister.Get(key)
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -186,21 +99,23 @@ func (c *MetadataController[T]) reconcile(ctx context.Context, key string) error
 		return err
 	}
 
+	// An empty rule map matches nothing, which still has to clear a
+	// condition left behind by rules that have since been removed.
+	rules := c.domain.rules(c.config.Current())
 	matched := matchingIDs(node, rules, c.domain.match)
-
 	if len(matched) == 0 {
-		return c.ensureConditionAbsent(ctx, node)
+		return ensureConditionAbsent(ctx, c.client, node, c.domain.conditionType)
 	}
 
 	desired := resolveValues(c.domain.kind, node.Name, matched, rules, c.domain.values)
 	newValues, changed := applyOverwrite(c.domain.get(node), desired)
 
 	if !changed {
-		return c.ensureCondition(ctx, node, appliedCondition(c.domain.conditionType, matched))
+		return ensureCondition(ctx, c.client, node, appliedCondition(c.domain.conditionType, matched))
 	}
 
-	if !conditionUpToDate(node, pendingCondition(c.domain.conditionType, matched)) {
-		return c.ensureCondition(ctx, node, pendingCondition(c.domain.conditionType, matched))
+	if pending := pendingCondition(c.domain.conditionType, matched); !conditionUpToDate(node, pending) {
+		return ensureCondition(ctx, c.client, node, pending)
 	}
 
 	updated := node.DeepCopy()
@@ -212,38 +127,6 @@ func (c *MetadataController[T]) reconcile(ctx context.Context, key string) error
 		return fmt.Errorf("updating node %q %s: %w", node.Name, c.domain.kind, err)
 	}
 	klog.InfoS("applied node metadata", "domain", c.domain.kind, "node", node.Name, "rules", matched)
-	return nil
-}
-
-func (c *MetadataController[T]) ensureCondition(ctx context.Context, node *corev1.Node, desired corev1.NodeCondition) error {
-	if conditionUpToDate(node, desired) {
-		return nil
-	}
-	updated := node.DeepCopy()
-	setCondition(updated, desired)
-	if _, err := c.client.CoreV1().Nodes().UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
-		if apierrors.IsConflict(err) {
-			return nil
-		}
-		return fmt.Errorf("updating node %q %s condition: %w", node.Name, c.domain.kind, err)
-	}
-	klog.InfoS("updated node condition", "domain", c.domain.kind, "node", node.Name, "status", desired.Status, "reason", desired.Reason)
-	return nil
-}
-
-func (c *MetadataController[T]) ensureConditionAbsent(ctx context.Context, node *corev1.Node) error {
-	if !hasCondition(node, c.domain.conditionType) {
-		return nil
-	}
-	updated := node.DeepCopy()
-	removeCondition(updated, c.domain.conditionType)
-	if _, err := c.client.CoreV1().Nodes().UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
-		if apierrors.IsConflict(err) {
-			return nil
-		}
-		return fmt.Errorf("clearing node %q %s condition: %w", node.Name, c.domain.kind, err)
-	}
-	klog.InfoS("cleared node condition, no rule matches", "domain", c.domain.kind, "node", node.Name)
 	return nil
 }
 

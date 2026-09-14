@@ -37,7 +37,7 @@ type Watcher struct {
 // NewWatcher builds a Watcher for the ConfigMap "namespace/name". Call Run
 // to start watching; Current returns a zero-value Config until the first
 // successful load.
-func NewWatcher(client kubernetes.Interface, namespace, name string, resync time.Duration) *Watcher {
+func NewWatcher(client kubernetes.Interface, namespace, name string, resync time.Duration) (*Watcher, error) {
 	w := &Watcher{namespace: namespace, name: name}
 	w.current.Store(&Config{})
 
@@ -58,13 +58,16 @@ func NewWatcher(client kubernetes.Interface, namespace, name string, resync time
 		cache.Indexers{},
 	)
 
-	w.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err := w.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj interface{}) { w.load(obj) },
 		UpdateFunc: func(_, obj interface{}) { w.load(obj) },
 		DeleteFunc: func(interface{}) { w.clear() },
 	})
+	if err != nil {
+		return nil, fmt.Errorf("registering configmap event handler: %w", err)
+	}
 
-	return w
+	return w, nil
 }
 
 // Current returns the most recently loaded configuration. Safe to call from
@@ -95,12 +98,8 @@ func (w *Watcher) load(obj interface{}) {
 		return
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
-		klog.ErrorS(err, "failed to parse configmap config.yaml, keeping previous configuration", "configmap", w.ref())
-		return
-	}
-	if err := cfg.Validate(); err != nil {
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
 		klog.ErrorS(err, "invalid configmap config.yaml, keeping previous configuration", "configmap", w.ref())
 		return
 	}
@@ -111,6 +110,20 @@ func (w *Watcher) load(obj interface{}) {
 	if w.OnChange != nil {
 		w.OnChange()
 	}
+}
+
+// Parse decodes and validates a "config.yaml" document. Unknown fields are
+// rejected rather than ignored, so a typo or an outdated schema fails
+// loudly instead of silently applying nothing.
+func Parse(raw []byte) (Config, error) {
+	var cfg Config
+	if err := yaml.UnmarshalStrict(raw, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parsing %s: %w", Key, err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func (w *Watcher) clear() {
