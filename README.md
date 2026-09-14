@@ -32,18 +32,18 @@ Optionally, it can also apply `externalIPs`, labels and annotations to Nodes
 based on rules read from a ConfigMap, each matched by `nodeSelector` and/or
 `providerID` regex — see [Rule configuration](#rule-configuration).
 
-## Building the image
+## Building
+
+The source lives at
+[git.example.com/platform/kubeling](https://git.example.com/platform/kubeling).
+Build and push the multi-arch (`linux/amd64`, `linux/arm64`) image:
 
 ```sh
-docker build -t ghcr.io/steigr/kubeling:latest .
-docker push ghcr.io/steigr/kubeling:latest
+make image                                  # git.example.com/platform/kubeling:latest
+make image IMAGE_REPOSITORY=registry.example.com/kubeling IMAGE_TAG=v0.2.0
 ```
 
-Or build the binary locally:
-
-```sh
-go build -o bin/kubeling ./cmd/kubeling
-```
+Or build the binary locally with `make build` (writes `bin/kubeling`).
 
 ## Deploying
 
@@ -56,6 +56,9 @@ helm install kubeling ./charts/kubeling \
   --namespace kube-system
 ```
 
+`make deploy` wraps `helm upgrade --install` for the current kube context
+and accepts `VALUES=<file>` and `NAMESPACE=<namespace>`.
+
 See the [chart README](charts/kubeling/README.md) for the full values reference.
 
 ### Plain manifests
@@ -66,6 +69,9 @@ Manifests are in [`deploy/`](deploy/):
 - `clusterrole.yaml` — cluster-wide permission to read/update Nodes, Node status, ConfigMaps, and emit Events.
 - `role.yaml` — namespaced permission to manage the leader-election `Lease` in `kube-system`.
 - `deployment.yaml` — a 2-replica Deployment with leader election enabled.
+- `examples/configmap.yaml` — an example rule ConfigMap. It lives in a
+  subdirectory so `kubectl apply -f deploy/` doesn't pick it up; adapt it
+  and uncomment the `CONFIGMAP` env var in `deployment.yaml` to use it.
 
 ```sh
 kubectl apply -f deploy/
@@ -140,6 +146,11 @@ Every rule, in every one of the three maps, is matched the same way:
 Both are optional; an unset one imposes no constraint. When a rule sets
 both, a Node must satisfy both to match it.
 
+The document is decoded strictly: unknown keys (a typo, or the retired
+`policies` schema) and `providerIDPattern`s that don't compile make the
+controller log an error and keep its previous configuration, rather than
+silently applying nothing.
+
 ### externalIPs
 
 Every `externalIPs` rule matching a Node contributes its `externalIPs` to
@@ -191,7 +202,8 @@ While a rule matches, the condition reflects live progress:
   present on the Node.
 
 If a Node stops matching any rule for a domain (the rule is edited, removed,
-or the Node's labels/providerID change), that domain's condition is removed
+the whole map or ConfigMap is removed, or the Node's labels/providerID
+change), that domain's condition is removed
 — even though, per the "nothing removed automatically" rule above, any
 labels/annotations/externalIPs it already applied are left in place. The
 condition tracks current applicability; the values it caused are permanent.
@@ -209,13 +221,21 @@ a newly added or widened rule can still match previously-unmatched Nodes.
 | `--leader-elect-namespace` | `kube-system` | Namespace holding the leader-election Lease. |
 | `--leader-elect-lease-name` | `kubeling` | Name of the leader-election Lease. |
 | `--resync-period` | `10m` | Node and ConfigMap informer resync period. |
-| `--workers` | `2` | Number of concurrent Node reconcile workers. |
+| `--workers` | `2` | Number of concurrent Node reconcile workers per controller. |
 | `--health-addr` | `:10258` | Address serving `/healthz`. |
 | `--configmap` | `""` (or `CONFIGMAP` env var) | Rule ConfigMap reference, `(namespace/)name`. Empty disables rule processing. |
 
 ## Development
 
+Requires Go (the version in `go.mod`), Helm and, for images, Docker with
+buildx.
+
 ```sh
-go build ./...
-go vet ./...
+make help     # list targets
+make check    # everything CI runs: vet, lint, test, helm-lint, helm-test
+make test     # go test -race -cover ./...
+make lint     # golangci-lint, installed at a pinned version into bin/
 ```
+
+CI runs `make check` on every push to `main` and on pull requests via
+Forgejo Actions ([`.forgejo/workflows/ci.yml`](.forgejo/workflows/ci.yml)).
