@@ -44,13 +44,13 @@ func NewWatcher(client kubernetes.Interface, namespace, name string, resync time
 	selector := fields.OneTermEqualSelector("metadata.name", name).String()
 	w.informer = cache.NewSharedIndexInformer(
 		&cache.ListWatch{
-			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {
 				options.FieldSelector = selector
-				return client.CoreV1().ConfigMaps(namespace).List(context.Background(), options)
+				return client.CoreV1().ConfigMaps(namespace).List(ctx, options)
 			},
-			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, options metav1.ListOptions) (watch.Interface, error) {
 				options.FieldSelector = selector
-				return client.CoreV1().ConfigMaps(namespace).Watch(context.Background(), options)
+				return client.CoreV1().ConfigMaps(namespace).Watch(ctx, options)
 			},
 		},
 		&corev1.ConfigMap{},
