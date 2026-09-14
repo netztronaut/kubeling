@@ -1,0 +1,127 @@
+# Default values for kubeling.
+
+replicaCount: 1
+
+# -- Deployment rollout strategy. Defaults to terminating a Pod before
+# scheduling its replacement, instead of Kubernetes' own default of
+# scheduling the replacement first (maxSurge: 25%) and only then killing
+# the old Pod. With hostNetwork and a nodeSelector that often matches
+# exactly as many nodes as there are replicas (e.g. one Pod per
+# control-plane node), the default strategy can deadlock: the surge Pod has
+# nowhere left to schedule, so the old Pod is never terminated and the
+# rollout blocks indefinitely.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
+
+image:
+  repository: git.example.com/platform/kubeling
+  # pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Scheme used for the ProviderID stamped onto Nodes: providerID = <providerID>://<node-name>.
+providerID: custom
+
+# -- Number of concurrent Node reconcile workers.
+workers: 2
+
+# -- Node informer resync period.
+resyncPeriod: 10m
+
+leaderElection:
+  # -- Enable leader election so only one replica reconciles Nodes at a time.
+  enabled: true
+  # -- Namespace holding the leader-election Lease. Must match the namespace
+  # the Role/RoleBinding are created in (see rbac.create).
+  namespace: kube-system
+  leaseName: kubeling
+
+# -- Extra command-line arguments appended to the container args.
+extraArgs: []
+
+# -- Policy configuration, rendered with `toYaml` into the "config.yaml" key
+# of a ConfigMap this chart creates and points the controller at. This is
+# the raw document the controller expects (currently just a "policies" map
+# of nodeSelector/externalIPs):
+# config:
+#   policies:
+#     example:
+#       nodeSelector:
+#         topology.kubernetes.io/zone: eu-central-1a
+#       externalIPs:
+#         - 203.0.113.10
+# Leave empty ({}) to not create a ConfigMap.
+config: {}
+
+# -- Reference to an existing ConfigMap containing policy configuration (a
+# "config.yaml" key with a "policies" map), read via the Kubernetes API —
+# never mounted as a volume. Format is "(namespace/)name"; the namespace
+# defaults to the controller's own namespace when omitted. Ignored when
+# `config` is non-empty, since the chart then manages its own ConfigMap.
+configMap: ""
+
+healthz:
+  port: 10258
+
+rbac:
+  # -- Create the ClusterRole/ClusterRoleBinding (Nodes, Events) and the
+  # Role/RoleBinding (leader-election Lease) this chart needs.
+  create: true
+
+serviceAccount:
+  # -- Specifies whether a service account should be created.
+  create: true
+  automount: true
+  annotations: {}
+  # -- The name of the service account to use. If not set and create is
+  # true, a name is generated using the fullname template.
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+# -- The controller manager is deployed with hostNetwork so it can be
+# scheduled before Nodes are initialized (see nodeSelector/tolerations
+# below, which target control-plane nodes by default).
+hostNetwork: true
+
+priorityClassName: system-cluster-critical
+
+# -- Runs on control-plane nodes by default so the controller can start
+# before other Nodes have been initialized by this very controller. Adjust
+# to fit clusters without schedulable control-plane nodes, e.g. a fixed set
+# of workers initialized out of band.
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    effect: NoSchedule
+  - key: node.cloudprovider.kubernetes.io/uninitialized
+    value: "true"
+    effect: NoSchedule
+  - key: node.kubernetes.io/not-ready
+    effect: NoSchedule
+
+affinity: {}

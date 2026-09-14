@@ -1,0 +1,19 @@
+Kubeling has been installed.
+
+{{- if ne .Release.Namespace "kube-system" }}
+
+WARNING: you installed into the "{{ .Release.Namespace }}" namespace. Most
+clusters run controller managers in "kube-system" — consider
+`--namespace kube-system` unless you have a specific reason not to.
+{{- end }}
+
+Check that it's running and has taken leadership:
+
+  kubectl -n {{ .Release.Namespace }} get pods -l "app.kubernetes.io/name={{ include "kubeling.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+  kubectl -n {{ .Values.leaderElection.namespace }} get lease {{ .Values.leaderElection.leaseName }}
+
+Nodes whose kubelet was started with --cloud-provider=external should have
+spec.providerID set to "{{ .Values.providerID }}://<node-name>" and no
+longer carry the node.cloudprovider.kubernetes.io/uninitialized taint:
+
+  kubectl get nodes -o custom-columns=NAME:.metadata.name,PROVIDER_ID:.spec.providerID

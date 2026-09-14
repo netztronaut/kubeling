@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubeling
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kubeling
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubeling
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubeling
+    spec:
+      serviceAccountName: kubeling
+      priorityClassName: system-cluster-critical
+      # Runs on control-plane nodes so it can start before other nodes have
+      # been initialized by this very controller. Adjust or remove the
+      # nodeSelector/tolerations below to match your cluster's node layout.
+      hostNetwork: true
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+        - key: node.cloudprovider.kubernetes.io/uninitialized
+          value: "true"
+          effect: NoSchedule
+        - key: node.kubernetes.io/not-ready
+          effect: NoSchedule
+      containers:
+        - name: kubeling
+          image: ghcr.io/steigr/kubeling:latest
+          args:
+            - --provider-id=custom
+            - --leader-elect=true
+            - --leader-elect-namespace=kube-system
+          # Uncomment to apply externalIPs from a "config.yaml" key in a
+          # ConfigMap, matched onto Nodes by nodeSelector. Read via the API,
+          # never mounted. "(namespace/)name" — the namespace defaults to
+          # this Deployment's own namespace when omitted.
+          # env:
+          #   - name: CONFIGMAP
+          #     value: kubeling-config
+          ports:
+            - name: healthz
+              containerPort: 10258
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+              host: 127.0.0.1
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true

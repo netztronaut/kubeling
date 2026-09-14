@@ -1,0 +1,13 @@
+apiVersion: v2
+name: kubeling
+description: A minimal cloud-controller-manager that lets kubelets run with --cloud-provider=external without a real cloud backing the cluster.
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/steigr/kubeling
+sources:
+  - https://github.com/steigr/kubeling
+keywords:
+  - cloud-controller-manager
+  - cloud-provider
+  - kubernetes
