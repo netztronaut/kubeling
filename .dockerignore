@@ -1,0 +1,8 @@
+# Ignore everything by default and re-include only what the build needs.
+**
+
+!go.mod
+!go.sum
+!cmd/**/*.go
+!pkg/**/*.go
+**/*_test.go

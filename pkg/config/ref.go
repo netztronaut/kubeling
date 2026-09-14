@@ -10,8 +10,8 @@ const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccou
 // ParseRef splits a "(namespace/)name" ConfigMap reference. An empty
 // namespace means the caller should fall back to OwnNamespace.
 func ParseRef(ref string) (namespace, name string) {
-	if idx := strings.IndexByte(ref, '/'); idx >= 0 {
-		return ref[:idx], ref[idx+1:]
+	if before, after, ok := strings.Cut(ref, "/"); ok {
+		return before, after
 	}
 	return "", ref
 }

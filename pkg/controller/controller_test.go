@@ -77,7 +77,7 @@ func (h *harness) writes() int {
 func (h *harness) converge(reconcile func(context.Context, string) error, name string) (int, *corev1.Node) {
 	h.t.Helper()
 	start := h.writes()
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		before := h.writes()
 		if err := reconcile(context.Background(), name); err != nil {
 			h.t.Fatalf("reconcile: %v", err)

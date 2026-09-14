@@ -2,6 +2,8 @@ module github.com/steigr/kubeling
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0

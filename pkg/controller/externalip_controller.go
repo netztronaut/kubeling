@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sort"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -127,8 +127,9 @@ func mergeExternalIPs(addresses []corev1.NodeAddress, externalIPs []string) ([]c
 		merged = append(merged, ip)
 	}
 
-	sort.SliceStable(merged, func(i, j int) bool {
-		return isIPv6(merged[i]) && !isIPv6(merged[j])
+	slices.SortStableFunc(merged, func(a, b string) int {
+		// IPv6 (true) sorts before IPv4 (false); equal families keep order.
+		return compareBool(isIPv6(b), isIPv6(a))
 	})
 
 	out := make([]corev1.NodeAddress, 0, len(others)+len(merged))
@@ -149,6 +150,17 @@ func mergeExternalIPs(addresses []corev1.NodeAddress, externalIPs []string) ([]c
 func isIPv6(addr string) bool {
 	ip := net.ParseIP(addr)
 	return ip != nil && ip.To4() == nil
+}
+
+func compareBool(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	default:
+		return -1
+	}
 }
 
 func addressesEqual(a, b []corev1.NodeAddress) bool {

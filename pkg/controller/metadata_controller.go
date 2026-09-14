@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -191,11 +192,7 @@ func applyOverwrite(existing map[string]string, desired map[string]string) (map[
 	}
 
 	out := make(map[string]string, len(existing)+len(desired))
-	for k, v := range existing {
-		out[k] = v
-	}
-	for k, v := range desired {
-		out[k] = v
-	}
+	maps.Copy(out, existing)
+	maps.Copy(out, desired)
 	return out, true
 }

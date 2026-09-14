@@ -54,7 +54,7 @@ func newNodeQueue(name string, nodes corev1informers.NodeInformer, reconcile fun
 
 	_, err := nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    q.enqueue,
-		UpdateFunc: func(_, obj interface{}) { q.enqueue(obj) },
+		UpdateFunc: func(_, obj any) { q.enqueue(obj) },
 	})
 	if err != nil {
 		return nil, fmt.Errorf("registering %s controller event handler: %w", name, err)
@@ -62,7 +62,7 @@ func newNodeQueue(name string, nodes corev1informers.NodeInformer, reconcile fun
 	return q, nil
 }
 
-func (q *nodeQueue) enqueue(obj interface{}) {
+func (q *nodeQueue) enqueue(obj any) {
 	key, err := cache.MetaNamespaceKeyFunc(obj)
 	if err != nil {
 		utilruntime.HandleError(err)
@@ -95,7 +95,7 @@ func (q *nodeQueue) Run(ctx context.Context, workers int) error {
 		return fmt.Errorf("%s controller: failed to wait for node cache to sync", q.name)
 	}
 
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go wait.UntilWithContext(ctx, q.runWorker, time.Second)
 	}
 

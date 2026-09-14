@@ -2,7 +2,7 @@ package controller
 
 import (
 	"regexp"
-	"sort"
+	"slices"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -63,6 +63,6 @@ func matchingIDs[T any](node *corev1.Node, rules map[string]T, match func(T) con
 			ids = append(ids, id)
 		}
 	}
-	sort.Strings(ids)
+	slices.Sort(ids)
 	return ids
 }

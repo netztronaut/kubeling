@@ -124,40 +124,32 @@ func main() {
 
 		var wg sync.WaitGroup
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := nc.Run(ctx, workers); err != nil {
 				klog.ErrorS(err, "node controller exited with error")
 			}
-		}()
+		})
 
 		if lc != nil {
 			go watcher.Run(ctx)
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				if err := lc.Run(ctx, workers); err != nil {
 					klog.ErrorS(err, "label controller exited with error")
 				}
-			}()
+			})
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				if err := ac.Run(ctx, workers); err != nil {
 					klog.ErrorS(err, "annotation controller exited with error")
 				}
-			}()
+			})
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				if err := eic.Run(ctx, workers); err != nil {
 					klog.ErrorS(err, "externalIP controller exited with error")
 				}
-			}()
+			})
 		}
 
 		wg.Wait()

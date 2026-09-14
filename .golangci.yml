@@ -1,0 +1,41 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - copyloopvar
+    - depguard
+    - errcheck
+    - goconst
+    - gocyclo
+    - govet
+    - ineffassign
+    - misspell
+    - modernize
+    - nakedret
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    depguard:
+      rules:
+        forbid-sort-pkg:
+          deny:
+            - pkg: sort
+              desc: Use the slices package instead
+    revive:
+      rules:
+        - name: comment-spacings
+        - name: import-shadowing
+  exclusions:
+    rules:
+      # Repeated fixture values in table tests read better inline.
+      - linters:
+          - goconst
+        path: _test\.go
+formatters:
+  enable:
+    - gofmt
+    - goimports

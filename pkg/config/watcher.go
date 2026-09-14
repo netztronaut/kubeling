@@ -59,9 +59,9 @@ func NewWatcher(client kubernetes.Interface, namespace, name string, resync time
 	)
 
 	_, err := w.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { w.load(obj) },
-		UpdateFunc: func(_, obj interface{}) { w.load(obj) },
-		DeleteFunc: func(interface{}) { w.clear() },
+		AddFunc:    func(obj any) { w.load(obj) },
+		UpdateFunc: func(_, obj any) { w.load(obj) },
+		DeleteFunc: func(any) { w.clear() },
 	})
 	if err != nil {
 		return nil, fmt.Errorf("registering configmap event handler: %w", err)
@@ -85,7 +85,7 @@ func (w *Watcher) ref() string {
 	return fmt.Sprintf("%s/%s", w.namespace, w.name)
 }
 
-func (w *Watcher) load(obj interface{}) {
+func (w *Watcher) load(obj any) {
 	cm, ok := obj.(*corev1.ConfigMap)
 	if !ok {
 		return
