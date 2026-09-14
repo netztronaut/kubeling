@@ -1,4 +1,4 @@
-// Package config loads the cloud-controller-manager's policy configuration
+// Package config loads the cloud-controller-manager's rule configuration
 // from a ConfigMap, read via the Kubernetes API rather than a mounted
 // volume.
 package config
@@ -8,45 +8,73 @@ import (
 	"regexp"
 )
 
-// Policy describes a set of Nodes, matched via NodeSelector, and the
-// externalIPs, labels and annotations that should be present on those
-// Nodes. Labels and annotations are authoritative: the policy's value wins
-// over whatever is already on the Node. If two policies disagree on the
-// value for the same key on the same Node, that key is left untouched on
-// both sides rather than fought over.
-type Policy struct {
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
-	ExternalIPs  []string          `json:"externalIPs,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	Annotations  map[string]string `json:"annotations,omitempty"`
+// Match describes which Nodes a rule applies to. Both constraints are
+// optional; an unset one imposes no restriction. When both are set, a Node
+// must satisfy both (logical AND).
+type Match struct {
+	NodeSelector      map[string]string `json:"nodeSelector,omitempty"`
+	ProviderIDPattern string            `json:"providerIDPattern,omitempty"`
 }
 
-// OnboardingRule matches Nodes by regular expression against
-// spec.providerID. A Node whose providerID matches ProviderIDPattern gets
-// Label=LabelValue applied once, and its onboarding NodeCondition set to
-// Onboarded. Unlike Policy labels, this is a one-time stamp: once applied,
-// it is never removed or re-applied, even if the rule is later changed or
-// removed.
-type OnboardingRule struct {
-	ProviderIDPattern string `json:"providerIDPattern"`
-	Label             string `json:"label"`
-	LabelValue        string `json:"labelValue"`
+// ExternalIPRule adds ExternalIPs to matching Nodes' status.addresses. The
+// result is a union across every matching rule: existing addresses (from
+// any source) are preserved, and nothing is ever removed automatically.
+type ExternalIPRule struct {
+	Match
+	ExternalIPs []string `json:"externalIPs,omitempty"`
 }
 
-// Config is the schema of the "config.yaml" key inside the policy
-// ConfigMap.
+// LabelRule authoritatively sets Labels on matching Nodes' metadata: a
+// rule's value for a key overwrites whatever is already there. If two
+// matching rules disagree on the value for the same key, that key is left
+// untouched on both sides rather than fought over.
+type LabelRule struct {
+	Match
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// AnnotationRule is the annotations equivalent of LabelRule.
+type AnnotationRule struct {
+	Match
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// Config is the schema of the "config.yaml" key inside the ConfigMap. Each
+// of the three maps is independently keyed by an arbitrary rule ID and
+// reconciled by its own controller.
 type Config struct {
-	Policies   map[string]Policy         `json:"policies,omitempty"`
-	Onboarding map[string]OnboardingRule `json:"onboarding,omitempty"`
+	ExternalIPs map[string]ExternalIPRule `json:"externalIPs,omitempty"`
+	Labels      map[string]LabelRule      `json:"labels,omitempty"`
+	Annotations map[string]AnnotationRule `json:"annotations,omitempty"`
 }
 
-// Validate reports an error if any OnboardingRule's ProviderIDPattern
-// doesn't compile as a regular expression.
+// Validate reports an error if any rule's ProviderIDPattern doesn't
+// compile as a regular expression.
 func (c Config) Validate() error {
-	for id, rule := range c.Onboarding {
-		if _, err := regexp.Compile(rule.ProviderIDPattern); err != nil {
-			return fmt.Errorf("onboarding rule %q: invalid providerIDPattern %q: %w", id, rule.ProviderIDPattern, err)
+	for id, r := range c.ExternalIPs {
+		if err := validatePattern(r.ProviderIDPattern); err != nil {
+			return fmt.Errorf("externalIPs rule %q: %w", id, err)
 		}
+	}
+	for id, r := range c.Labels {
+		if err := validatePattern(r.ProviderIDPattern); err != nil {
+			return fmt.Errorf("labels rule %q: %w", id, err)
+		}
+	}
+	for id, r := range c.Annotations {
+		if err := validatePattern(r.ProviderIDPattern); err != nil {
+			return fmt.Errorf("annotations rule %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func validatePattern(pattern string) error {
+	if pattern == "" {
+		return nil
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("invalid providerIDPattern %q: %w", pattern, err)
 	}
 	return nil
 }

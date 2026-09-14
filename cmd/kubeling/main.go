@@ -3,7 +3,8 @@
 // lets kubelets run with --cloud-provider=external by stamping a
 // "custom://<node-name>" ProviderID onto every Node and removing the
 // node.cloudprovider.kubernetes.io/uninitialized taint. It can optionally
-// apply externalIPs to Nodes based on policies read from a ConfigMap.
+// apply externalIPs, labels and annotations to Nodes based on rules read
+// from a ConfigMap, each matched by nodeSelector and/or providerIDPattern.
 package main
 
 import (
@@ -82,8 +83,9 @@ func main() {
 
 	var (
 		watcher *config.Watcher
-		pc      *controller.PolicyController
-		kc      *controller.KubelingController
+		lc      *controller.MetadataController[config.LabelRule]
+		ac      *controller.MetadataController[config.AnnotationRule]
+		eic     *controller.ExternalIPController
 	)
 	if configMapRef != "" {
 		cmNamespace, cmName := config.ParseRef(configMapRef)
@@ -91,11 +93,13 @@ func main() {
 			cmNamespace = config.OwnNamespace()
 		}
 		watcher = config.NewWatcher(client, cmNamespace, cmName, resyncPeriod)
-		pc = controller.NewPolicyController(client, nodeInformer, watcher)
-		kc = controller.NewKubelingController(client, nodeInformer, watcher)
+		lc = controller.NewLabelController(client, nodeInformer, watcher)
+		ac = controller.NewAnnotationController(client, nodeInformer, watcher)
+		eic = controller.NewExternalIPController(client, nodeInformer, watcher)
 		watcher.OnChange = func() {
-			pc.Enqueue()
-			kc.EnqueueAll()
+			lc.EnqueueAll()
+			ac.EnqueueAll()
+			eic.EnqueueAll()
 		}
 	}
 
@@ -112,22 +116,30 @@ func main() {
 			}
 		}()
 
-		if pc != nil {
+		if lc != nil {
 			go watcher.Run(ctx)
 
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := pc.Run(ctx); err != nil {
-					klog.ErrorS(err, "policy controller exited with error")
+				if err := lc.Run(ctx, workers); err != nil {
+					klog.ErrorS(err, "label controller exited with error")
 				}
 			}()
 
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := kc.Run(ctx, workers); err != nil {
-					klog.ErrorS(err, "kubeling controller exited with error")
+				if err := ac.Run(ctx, workers); err != nil {
+					klog.ErrorS(err, "annotation controller exited with error")
+				}
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := eic.Run(ctx, workers); err != nil {
+					klog.ErrorS(err, "externalIP controller exited with error")
 				}
 			}()
 		}

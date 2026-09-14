@@ -28,10 +28,9 @@ cloud-provider contract. It's meant for bare-metal, on-prem, or dev clusters
 where `--cloud-provider=external` is required by the kubelet/control plane
 but there's no cloud to integrate with.
 
-Optionally, it can also apply `externalIPs` to Nodes based on policies read
-from a ConfigMap — see [Policy configuration](#policy-configuration) — and
-label Nodes matching a `providerID` pattern, reflecting the outcome in a
-custom NodeCondition — see [Node onboarding](#node-onboarding).
+Optionally, it can also apply `externalIPs`, labels and annotations to Nodes
+based on rules read from a ConfigMap, each matched by `nodeSelector` and/or
+`providerID` regex — see [Rule configuration](#rule-configuration).
 
 ## Building the image
 
@@ -96,100 +95,109 @@ New Nodes will show the `node.cloudprovider.kubernetes.io/uninitialized`
 taint until this controller processes them, which normally happens within
 seconds of the Node object appearing.
 
-## Policy configuration
+## Rule configuration
 
-The controller can optionally read policies from a ConfigMap and apply them
-to Nodes. Point it at one with `--configmap=(namespace/)name` or the
+The controller can optionally read rules from a ConfigMap and apply them to
+Nodes. Point it at one with `--configmap=(namespace/)name` or the
 `CONFIGMAP` environment variable (the flag wins if both are set); the
 namespace defaults to the controller's own namespace when omitted. The
 ConfigMap is read via the Kubernetes API (get/list/watch) — it is never
 mounted as a volume — so changes take effect within seconds, without a pod
-restart. Leave it unset to disable policy processing entirely.
+restart. Leave it unset to disable rule processing entirely.
 
-The ConfigMap must have a `config.yaml` key holding a YAML document with a
-`policies` map at the root, keyed by an arbitrary policy ID:
+The ConfigMap must have a `config.yaml` key holding a YAML document with up
+to three independent rule maps at the root — `externalIPs`, `labels`,
+`annotations` — each keyed by an arbitrary rule ID and reconciled by its
+own controller:
 
 ```yaml
-policies:
-  example:
+externalIPs:
+  edge:
     nodeSelector:
       topology.kubernetes.io/zone: eu-central-1a
     externalIPs:
       - 203.0.113.10
+labels:
+  edge:
+    providerIDPattern: '^custom://edge-'
     labels:
       environment: production
+annotations:
+  edge:
+    nodeSelector:
+      topology.kubernetes.io/zone: eu-central-1a
     annotations:
       example.com/rack: r42
 ```
 
-- `nodeSelector` — labels a Node must have for this policy to apply.
-- `externalIPs` — optional list of IPs to ensure are present on matching
-  Nodes' `status.addresses` as `ExternalIP` entries.
-- `labels` / `annotations` — optional key/value pairs to set on matching
-  Nodes' metadata.
+Every rule, in every one of the three maps, is matched the same way:
 
-Every policy whose `nodeSelector` matches a Node contributes its
-`externalIPs` to that Node (existing addresses, including ones added by
-other matching policies, are preserved; nothing is ever removed
-automatically — if a policy is deleted or a Node stops matching, previously
-applied `externalIPs` stay until removed by hand). Whenever the controller
-touches a Node's `externalIPs`, it also normalizes their order so IPv6
-addresses always come before IPv4 ones (stable within each family) — this
-applies to the full set on the Node, not just newly added addresses, so a
-pre-existing IPv4-before-IPv6 ordering gets corrected too.
-
-`labels` and `annotations` are authoritative: a policy's value is written
-onto the Node even if the key already exists with a different value (from
-another controller, or from `kubectl label`/`kubectl annotate`) — same
-"nothing removed automatically" rule applies if a policy is later deleted
-or a Node stops matching. If two policies both match the same Node and
-disagree on the value for the same key, neither value is applied and an
-error is logged; fix the conflicting policies to resolve it. Because
-`labels`/`annotations` can overwrite anything, including labels other
-controllers or the scheduler rely on, avoid targeting reserved prefixes
-(`kubernetes.io/`, `node-role.kubernetes.io/`, etc.) unless you mean to.
-
-## Node onboarding
-
-The same ConfigMap used for [policies](#policy-configuration) can also carry
-an `onboarding` map, keyed by an arbitrary rule ID:
-
-```yaml
-onboarding:
-  edge:
-    providerIDPattern: '^custom://edge-'
-    label: kubeling.io/onboarded
-    labelValue: "true"
-```
-
+- `nodeSelector` — labels a Node must have for this rule to apply.
 - `providerIDPattern` — a Go regular expression matched against a Node's
-  `spec.providerID`. A Node with no `providerID` yet never matches.
-- `label` / `labelValue` — the label applied, once, to a Node whose
-  `providerID` matches.
+  `spec.providerID`. A Node with no `providerID` yet never matches a rule
+  that sets this.
 
-Every Node the controller sees gets a `kubeling.io/Onboarded` NodeCondition
-reflecting the outcome:
+Both are optional; an unset one imposes no constraint. When a rule sets
+both, a Node must satisfy both to match it.
 
-- `Status: "False", Reason: "Pending"` — no onboarding rule matches this
-  Node's `providerID` yet.
-- `Status: "True", Reason: "Onboarded"` — a rule matched and its label has
-  been applied.
+### externalIPs
 
-If multiple rules could match the same Node, the one with the
-lexicographically first rule ID wins.
+Every `externalIPs` rule matching a Node contributes its `externalIPs` to
+that Node's `status.addresses` as `ExternalIP` entries (existing addresses,
+including ones added by other matching rules, are preserved — nothing is
+ever removed automatically; if a rule is deleted or a Node stops matching,
+previously applied `externalIPs` stay until removed by hand). Whenever the
+controller touches a Node's `externalIPs`, it also normalizes their order so
+IPv6 addresses always come before IPv4 ones (stable within each family) —
+this applies to the full set on the Node, not just newly added addresses, so
+a pre-existing IPv4-before-IPv6 ordering gets corrected too.
 
-Onboarding is a **one-time stamp**, not a continuously-enforced policy: once
-a Node is `Onboarded`, its label and condition are never re-evaluated,
-changed, or removed — not even if the matching rule is later edited or
-removed from the ConfigMap (same "nothing removed automatically" rule
-[policies](#policy-configuration) follow for `externalIPs`/`labels`).
-Editing the ConfigMap does cause every Node to be re-evaluated against the
-current rules, so a newly added or widened rule can still onboard
-previously-unmatched Nodes.
+### labels / annotations
 
-Choose a `label` key outside anything a policy in the same ConfigMap also
-manages — the policy and onboarding mechanisms don't coordinate with each
-other, so both writing the same key can fight over its value.
+`labels` and `annotations` rules are authoritative: a rule's value is
+written onto the Node even if the key already exists with a different value
+(from another controller, or from `kubectl label`/`kubectl annotate`) — same
+"nothing removed automatically" rule applies if a rule is later deleted or a
+Node stops matching. If two matching rules (within the same map) disagree on
+the value for the same key, neither value is applied and an error is
+logged; fix the conflicting rules to resolve it. Because `labels`/
+`annotations` can overwrite anything, including labels other controllers or
+the scheduler rely on, avoid targeting reserved prefixes (`kubernetes.io/`,
+`node-role.kubernetes.io/`, etc.) unless you mean to.
+
+The three rule maps are reconciled by independent controllers that don't
+coordinate with each other, so this conflict detection only applies
+*within* a single map (two `labels` rules, or two `annotations` rules) —
+not across maps.
+
+### Conditions
+
+Each of the three controllers maintains its own NodeCondition, present on a
+Node **only while at least one rule for that domain matches it** — a Node no
+`annotations` rule ever matches carries no `kubeling.io/Annotated` condition
+at all:
+
+| Domain | Condition type |
+| --- | --- |
+| `externalIPs` | `kubeling.io/ExternalIPsApplied` |
+| `labels` | `kubeling.io/Labeled` |
+| `annotations` | `kubeling.io/Annotated` |
+
+While a rule matches, the condition reflects live progress:
+
+- `Status: "False", Reason: "Pending"` — a rule matches but its values
+  haven't been fully applied to the Node yet.
+- `Status: "True", Reason: "Applied"` — a rule matches and its values are
+  present on the Node.
+
+If a Node stops matching any rule for a domain (the rule is edited, removed,
+or the Node's labels/providerID change), that domain's condition is removed
+— even though, per the "nothing removed automatically" rule above, any
+labels/annotations/externalIPs it already applied are left in place. The
+condition tracks current applicability; the values it caused are permanent.
+
+Editing the ConfigMap re-evaluates every Node against the current rules, so
+a newly added or widened rule can still match previously-unmatched Nodes.
 
 ## Flags
 
@@ -203,7 +211,7 @@ other, so both writing the same key can fight over its value.
 | `--resync-period` | `10m` | Node and ConfigMap informer resync period. |
 | `--workers` | `2` | Number of concurrent Node reconcile workers. |
 | `--health-addr` | `:10258` | Address serving `/healthz`. |
-| `--configmap` | `""` (or `CONFIGMAP` env var) | Policy ConfigMap reference, `(namespace/)name`. Empty disables policy processing. |
+| `--configmap` | `""` (or `CONFIGMAP` env var) | Rule ConfigMap reference, `(namespace/)name`. Empty disables rule processing. |
 
 ## Development
 

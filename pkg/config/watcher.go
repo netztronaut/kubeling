@@ -106,7 +106,8 @@ func (w *Watcher) load(obj interface{}) {
 	}
 
 	w.current.Store(&cfg)
-	klog.InfoS("loaded policy configuration", "configmap", w.ref(), "policies", len(cfg.Policies), "onboarding", len(cfg.Onboarding))
+	klog.InfoS("loaded rule configuration", "configmap", w.ref(),
+		"externalIPs", len(cfg.ExternalIPs), "labels", len(cfg.Labels), "annotations", len(cfg.Annotations))
 	if w.OnChange != nil {
 		w.OnChange()
 	}

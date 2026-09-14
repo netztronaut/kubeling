@@ -12,15 +12,20 @@ three things:
 1. Stamps `Node.spec.providerID = <provider-id>://<node-name>` (default
    scheme `custom`) and removes the `node.cloudprovider.kubernetes.io/uninitialized`
    taint the kubelet sets in external mode.
-2. Optionally applies `externalIPs`/labels/annotations to Nodes based on
-   policies read live from a ConfigMap (never mounted as a volume — read via
-   the Kubernetes API so changes apply within seconds, no pod restart).
-3. Optionally, from the same ConfigMap, one-time labels a Node whose
-   `providerID` matches a configured regex and reflects the outcome in a
-   `kubeling.io/Onboarded` NodeCondition (`Pending`/`Onboarded`).
+2. Optionally applies `externalIPs`, labels, and annotations to Nodes,
+   each from its own independently-reconciled rule map read live from a
+   ConfigMap (never mounted as a volume — read via the Kubernetes API so
+   changes apply within seconds, no pod restart). Every rule, in every map,
+   is matched by `nodeSelector` and/or a regex against `providerID`.
+3. Each of those three domains maintains its own `kubeling.io/` NodeCondition
+   (`Labeled`, `Annotated`, `ExternalIPsApplied`) — present on a Node only
+   while at least one rule for that domain currently matches it, tracking
+   live applicability (`Pending`/`Applied`) separately from the
+   labels/annotations/addresses it already wrote, which are never removed
+   automatically.
 
 There is intentionally no instance metadata, zone/region, or load balancer
-support — see README.md for the full behavioral spec (policy semantics,
+support — see README.md for the full behavioral spec (rule semantics,
 conflict resolution, flags).
 
 ## Commands
@@ -47,14 +52,17 @@ There is no lint config beyond `go vet`; no CI config in-repo.
 
 ## Architecture
 
-Single binary, `cmd/kubeling/main.go`, wiring up to three
-independent controllers on top of one shared `informers.SharedInformerFactory`
-(Node informer). All controllers are plain client-go
-workqueue-based controllers (`AddEventHandler` → enqueue → worker loop →
-`reconcile`), not controller-runtime.
+Single binary, `cmd/kubeling/main.go`, wiring up to four independent
+controllers on top of one shared `informers.SharedInformerFactory` (Node
+informer). All controllers are plain client-go workqueue-based controllers,
+keyed per-Node (`AddEventHandler` → enqueue Node name → worker loop →
+`reconcile(ctx, nodeName)`), not controller-runtime. There is deliberately
+only one reconcile shape in this codebase now — every controller's matching
+logic is purely a function of that one Node's own state, so there's no
+correctness reason for a controller to work off a global sync key instead.
 
-- **`pkg/controller.NodeController`** (`node_controller.go`) — keyed by Node
-  name. Per-Node reconcile: set `providerID` if empty, strip the
+- **`pkg/controller.NodeController`** (`node_controller.go`) — always
+  active. Per-Node reconcile: set `providerID` if empty, strip the
   `uninitialized` taint if present. Conflict errors are swallowed (the
   informer will observe the newer version and requeue).
 
@@ -62,50 +70,65 @@ workqueue-based controllers (`AddEventHandler` → enqueue → worker loop →
   informer (field-selected by name) that parses the `config.yaml` key into a
   `config.Config` and stores it in an `atomic.Pointer`. Rejects (and keeps
   the previous configuration on) both a YAML parse failure and a
-  `Config.Validate` failure — currently just "every `onboarding` rule's
-  `providerIDPattern` compiles as a regex". `OnChange` is a caller-supplied
+  `Config.Validate` failure — every rule's `providerIDPattern`, across all
+  three rule maps, must compile as a regex. `OnChange` is a caller-supplied
   hook fired on every successful load/clear. Only instantiated when
-  `--configmap`/`CONFIGMAP` is set; the policy and kubeling controllers and
+  `--configmap`/`CONFIGMAP` is set; the three rule controllers below and
   this watcher are all nil/absent otherwise.
 
-- **`pkg/controller.PolicyController`** (`policy_controller.go`) — *not*
-  keyed per-Node. It has a single workqueue item (`syncKey`) because policy
-  application depends on the whole Node set and whole policy set together.
-  Triggered by Node add/update/delete *and* by `watcher.OnChange` (wired in
-  `main.go`: `watcher.OnChange = pc.Enqueue`). Each reconcile pass
-  (`applyOnePass`) walks Nodes in sorted-name order, finds matching policies
-  by `nodeSelector`, and applies **at most one field-group change per pass**
-  (labels+annotations together, else externalIPs) before returning `changed
-  = true` and restarting the whole pass from a fresh Node listing. This
-  keeps each individual Update/UpdateStatus call working against a
-  known-fresh object. `resolveKeyValues` merges labels/annotations across
-  matching policies per key; on a same-key value conflict between policies
-  it logs and leaves that key untouched on both sides (never fought over,
-  never picked arbitrarily). `mergeExternalIPs` unions existing +
-  policy-supplied ExternalIP addresses, dedupes, and reorders the full
-  ExternalIP block (IPv6 before IPv4, stable within family) — every touch
-  renormalizes ordering, not just newly-added addresses. Nothing is ever
-  removed automatically when a policy is deleted or a Node stops matching.
+- **`pkg/controller.MetadataController[T]`** (`metadata_controller.go`) — a
+  single generic implementation (`T` = `config.LabelRule` or
+  `config.AnnotationRule`) backing both `NewLabelController` (reads
+  `Config.Labels`, writes `node.Labels`, maintains `LabeledConditionType`)
+  and `NewAnnotationController` (same shape, `Config.Annotations` /
+  `node.Annotations` / `AnnotatedConditionType`). What differs between the
+  two domains is captured entirely in a `metadataDomain[T]` struct of
+  closures passed to `newMetadataController`; the reconcile logic, workqueue
+  plumbing, and condition management are written once. `reconcile` applies
+  **at most one write per call** — clear a stale condition, set `Pending`,
+  write the metadata, or set `Applied` — relying on the informer's
+  `UpdateFunc` to re-enqueue the Node after each write so the next step runs
+  against a fresh object (this can take up to 3 passes to converge from
+  cold: Pending → metadata write → Applied). `resolveValues` merges a
+  domain's values across matching rules per key; a same-key conflict is
+  logged and the key is left out entirely (never fought over, never picked
+  arbitrarily). `applyOverwrite` computes the resulting map and whether
+  anything changed. Values already applied are never removed automatically,
+  even if the rule is later changed/removed or the Node stops matching —
+  but the domain's condition *is* removed once no rule matches anymore
+  (`ensureConditionAbsent`), since the condition tracks live applicability
+  while the values themselves are permanent.
 
-- **`pkg/controller.KubelingController`** (`kubeling_controller.go`) —
-  keyed by Node name, like `NodeController`. Per-Node reconcile against the
-  same `watcher.Current().Onboarding` rules (regex on `providerID` → label
-  key/value). At most one write per reconcile call — the label `Update`, or
-  the `kubeling.io/Onboarded` condition `UpdateStatus` — relying on the
-  informer's own `UpdateFunc` to re-enqueue the Node after the label write
-  so the condition write follows on a fresh object, the same trick
-  `PolicyController` uses across a whole pass but applied per-Node here
-  since this controller is keyed per-Node rather than by a single sync key.
-  `EnqueueAll` (wired into the same `watcher.OnChange` as
-  `PolicyController.Enqueue`) re-evaluates every Node when the ConfigMap
-  changes. Onboarding is a one-time stamp, never re-applied or removed once
-  a Node reaches `Onboarded` — same "nothing removed automatically"
-  convention as `PolicyController`'s externalIPs/labels.
+- **`pkg/controller.ExternalIPController`** (`externalip_controller.go`) —
+  same per-Node reconcile shape as `MetadataController`, but not built on
+  it: `externalIPs` are a union (not an authoritative overwrite) written to
+  `status.addresses` via `UpdateStatus`, not `node.Labels`/`Annotations` via
+  `Update`, and matching rules don't need `resolveValues`'s conflict
+  handling since their IP lists are simply concatenated. `mergeExternalIPs`
+  unions existing + rule-supplied ExternalIP addresses, dedupes, and
+  reorders the full ExternalIP block (IPv6 before IPv4, stable within
+  family) — every touch renormalizes ordering, not just newly-added
+  addresses. Maintains `ExternalIPsAppliedConditionType` with the same
+  Pending/Applied/absent semantics as `MetadataController`.
+
+- **`pkg/controller/match.go`** — `matches(node, config.Match)` is the one
+  place nodeSelector/providerIDPattern matching happens, shared by all three
+  rule controllers; `matchingIDs[T]` (generic) returns the sorted list of
+  rule IDs matching a Node from any of the three rule maps.
+
+- **`pkg/controller/conditions.go`** — condition helpers shared by
+  `MetadataController` and `ExternalIPController`: the three
+  `kubeling.io/...ConditionType` constants, `pendingCondition`/
+  `appliedCondition` builders, `conditionUpToDate`/`setCondition`
+  (preserves `LastTransitionTime` when status hasn't changed) and
+  `removeCondition`/`hasCondition`.
 
 - **`pkg/config/ref.go`** — `ParseRef` splits a `"(namespace/)name"` flag
   value; `OwnNamespace` reads the projected service-account namespace file,
   falling back to `"default"` outside a cluster.
 
+`main.go` wires `watcher.OnChange` to call `EnqueueAll()` on all three rule
+controllers (re-evaluating every Node) whenever the ConfigMap changes.
 Leader election (`main.go`) wraps a `run(ctx)` closure that starts the
 shared informer factory and all controllers' `Run` loops; with
 `--leader-elect=false` it's called directly instead of via
