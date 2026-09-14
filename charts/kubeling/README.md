@@ -1,7 +1,7 @@
 # Kubeling
 
-A Helm chart for [Kubeling](../../README.md), a
-minimal cloud-controller-manager that lets kubelets run with
+A Helm chart for [Kubeling](../../README.md), a minimal
+cloud-controller-manager that lets kubelets run with
 `--cloud-provider=external` without a real cloud backing the cluster.
 
 ## Installing
@@ -28,30 +28,41 @@ helm install kubeling ./charts/kubeling \
   --set-json 'tolerations=[]'
 ```
 
-## Policy configuration
+## Rule configuration
 
-The controller reads `externalIPs`/`nodeSelector` policies from a ConfigMap
-via the Kubernetes API (get/list/watch — never mounted as a volume). The
-chart can manage that ConfigMap for you via `config`, or point the
-controller at one you manage yourself via `configMap`.
+The controller can apply `externalIPs`, labels and annotations to Nodes
+from rules it reads from a ConfigMap via the Kubernetes API (get/list/watch
+— never mounted as a volume, so edits apply within seconds). The chart can
+manage that ConfigMap for you via `config`, or point the controller at one
+you manage yourself via `configMap`. With neither set, only providerID and
+taint handling run. The rule semantics — matching, conflict handling and
+the `kubeling.io/*` Node conditions — are described in the
+[main README](../../README.md#rule-configuration).
 
 ### Chart-managed ConfigMap (`config`)
 
-Set `config` to the policy document itself; it's rendered with `toYaml`
+Set `config` to the rule document itself; it's rendered with `toYaml`
 straight into the `config.yaml` key of a `<release>-config` ConfigMap the
 chart creates, and the controller is pointed at it automatically:
 
 ```yaml
 # values.yaml
 config:
-  policies:
-    example:
+  externalIPs:
+    edge:
       nodeSelector:
         topology.kubernetes.io/zone: eu-central-1a
       externalIPs:
         - 203.0.113.10
+  labels:
+    edge:
+      providerIDPattern: '^custom://edge-'
       labels:
         environment: production
+  annotations:
+    edge:
+      nodeSelector:
+        topology.kubernetes.io/zone: eu-central-1a
       annotations:
         example.com/rack: r42
 ```
@@ -59,8 +70,13 @@ config:
 ```sh
 helm install kubeling ./charts/kubeling \
   --namespace kube-system \
-  -f values.yaml
+  --values values.yaml
 ```
+
+The controller rejects documents with unknown keys (and keeps its previous
+configuration, logging an error), so a typo never silently disables a rule.
+[`ci/rules-values.yaml`](ci/rules-values.yaml) is a complete example that
+the repository's tests validate against the controller's schema.
 
 ### Externally-managed ConfigMap (`configMap`)
 
@@ -76,40 +92,28 @@ helm install kubeling ./charts/kubeling \
   --set configMap=kubeling-config
 ```
 
-### Behavior
-
-Every policy whose `nodeSelector` matches a Node gets its `externalIPs`
-merged into that Node's `status.addresses` as `ExternalIP` entries
-(existing addresses, including ones from other matching policies, are kept;
-nothing is ever removed automatically). IPv6 addresses always sort before
-IPv4 ones within that set. `labels`/`annotations` are
-authoritative — a policy's value overwrites whatever is already on the
-Node, even from another controller — with one safety valve: if two
-matching policies disagree on the value for the same key, that key is
-skipped (and an error logged) on both sides rather than fought over. When
-neither `config` nor `configMap` is set, the `nodes/status` and
-`configmaps` RBAC rules are still created, but nothing reads or writes
-through them.
+The RBAC rules for `nodes/status` and `configmaps` are created either way,
+but nothing reads or writes through them while rule processing is off.
 
 ## Values
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `replicaCount` | `2` | Number of replicas. Only one is active at a time; see `leaderElection`. |
+| `replicaCount` | `1` | Number of replicas. Only one is active at a time; see `leaderElection`. |
 | `updateStrategy` | `RollingUpdate`, `maxSurge: 0`, `maxUnavailable: 1` | Deployment rollout strategy. Terminates a Pod before scheduling its replacement so rollouts don't deadlock on clusters where `nodeSelector` matches only as many nodes as there are replicas. |
-| `image.repository` | `ghcr.io/steigr/kubeling` | Container image repository. |
+| `image.repository` | `git.example.com/platform/kubeling` | Container image repository. |
 | `image.tag` | `""` (chart `appVersion`) | Container image tag. |
-| `image.pullPolicy` | `IfNotPresent` | Image pull policy. |
+| `image.pullPolicy` | `""` (Kubernetes default) | Image pull policy. Unset, Kubernetes pulls `latest` tags on every start and other tags only when missing. |
 | `imagePullSecrets` | `[]` | Image pull secrets. |
 | `providerID` | `custom` | Scheme used for the ProviderID stamped onto Nodes (`providerID = <providerID>://<node-name>`). |
-| `workers` | `2` | Number of concurrent Node reconcile workers. |
-| `resyncPeriod` | `10m` | Node informer resync period. |
+| `workers` | `2` | Number of concurrent Node reconcile workers per controller. |
+| `resyncPeriod` | `10m` | Node and ConfigMap informer resync period. |
 | `leaderElection.enabled` | `true` | Enable leader election across replicas. |
 | `leaderElection.namespace` | `kube-system` | Namespace holding the leader-election Lease; the Role/RoleBinding are created here. |
 | `leaderElection.leaseName` | `kubeling` | Name of the leader-election Lease. |
 | `extraArgs` | `[]` | Extra command-line arguments appended to the container. |
-| `config` | `{}` | Policy document, rendered with `toYaml` into a chart-managed ConfigMap's `config.yaml` key. See [Policy configuration](#policy-configuration). Leave empty to not create a ConfigMap. |
-| `configMap` | `""` | Reference to an existing ConfigMap with policy configuration, as `"(namespace/)name"`; namespace defaults to the controller's own namespace. Ignored when `config` is non-empty. |
+| `config` | `{}` | Rule document, rendered with `toYaml` into a chart-managed ConfigMap's `config.yaml` key. See [Rule configuration](#rule-configuration). Leave empty to not create a ConfigMap. |
+| `configMap` | `""` | Reference to an existing ConfigMap with rule configuration, as `"(namespace/)name"`; namespace defaults to the controller's own namespace. Ignored when `config` is non-empty. |
 | `healthz.port` | `10258` | Port serving `/healthz`, used by the liveness probe. |
 | `rbac.create` | `true` | Create the ClusterRole/ClusterRoleBinding and Role/RoleBinding this chart needs. |
 | `serviceAccount.create` | `true` | Create a ServiceAccount. |
@@ -126,3 +130,12 @@ through them.
 | `tolerations` | control-plane / uninitialized / not-ready | Tolerations for the Deployment. |
 | `affinity` | `{}` | Affinity rules for the Deployment. |
 | `nameOverride` / `fullnameOverride` | `""` | Override the generated chart/release name. |
+
+## Testing
+
+```sh
+make helm-lint helm-test
+```
+
+`helm-test` runs [`hack/test-chart.sh`](../../hack/test-chart.sh), which
+renders the chart with representative values and asserts on the output.

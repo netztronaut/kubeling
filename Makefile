@@ -28,7 +28,7 @@ help: ## Show this help.
 ##@ Development
 
 .PHONY: check
-check: vet lint test helm-lint ## Run every check CI runs.
+check: vet lint test helm-lint helm-test ## Run every check CI runs.
 
 .PHONY: fmt
 fmt: $(GOLANGCI_LINT) ## Format Go code.
@@ -49,6 +49,11 @@ test: ## Run Go tests with the race detector and coverage.
 .PHONY: helm-lint
 helm-lint: ## Lint the Helm chart.
 	$(HELM) lint --strict $(CHART_DIR)
+	$(HELM) lint --strict $(CHART_DIR) --values=$(CHART_DIR)/ci/rules-values.yaml
+
+.PHONY: helm-test
+helm-test: ## Render the Helm chart and assert on the output.
+	HELM=$(HELM) hack/test-chart.sh $(CHART_DIR)
 
 .PHONY: build
 build: ## Build the kubeling binary into bin/.

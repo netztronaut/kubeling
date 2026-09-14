@@ -18,8 +18,10 @@ updateStrategy:
 
 image:
   repository: git.example.com/platform/kubeling
-  # pullPolicy: Always
-  # Overrides the image tag whose default is the chart appVersion.
+  # -- Image pull policy. Empty leaves it to Kubernetes, which pulls
+  # "latest" tags on every start and other tags only when missing.
+  pullPolicy: ""
+  # -- Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
 imagePullSecrets: []
@@ -32,7 +34,7 @@ providerID: custom
 # -- Number of concurrent Node reconcile workers.
 workers: 2
 
-# -- Node informer resync period.
+# -- Node and ConfigMap informer resync period.
 resyncPeriod: 10m
 
 leaderElection:
@@ -46,32 +48,46 @@ leaderElection:
 # -- Extra command-line arguments appended to the container args.
 extraArgs: []
 
-# -- Policy configuration, rendered with `toYaml` into the "config.yaml" key
-# of a ConfigMap this chart creates and points the controller at. This is
-# the raw document the controller expects (currently just a "policies" map
-# of nodeSelector/externalIPs):
+# -- Rule configuration, rendered with `toYaml` into the "config.yaml" key
+# of a ConfigMap this chart creates and points the controller at. It holds
+# up to three independent rule maps, each keyed by an arbitrary rule ID and
+# matched by nodeSelector and/or providerIDPattern (see the chart README and
+# ci/rules-values.yaml for a complete example):
 # config:
-#   policies:
-#     example:
+#   externalIPs:
+#     edge:
 #       nodeSelector:
 #         topology.kubernetes.io/zone: eu-central-1a
 #       externalIPs:
 #         - 203.0.113.10
-# Leave empty ({}) to not create a ConfigMap.
+#   labels:
+#     edge:
+#       providerIDPattern: '^custom://edge-'
+#       labels:
+#         environment: production
+#   annotations:
+#     edge:
+#       nodeSelector:
+#         topology.kubernetes.io/zone: eu-central-1a
+#       annotations:
+#         example.com/rack: r42
+# Unknown keys are rejected by the controller, which then keeps its previous
+# configuration. Leave empty ({}) to not create a ConfigMap.
 config: {}
 
-# -- Reference to an existing ConfigMap containing policy configuration (a
-# "config.yaml" key with a "policies" map), read via the Kubernetes API —
-# never mounted as a volume. Format is "(namespace/)name"; the namespace
-# defaults to the controller's own namespace when omitted. Ignored when
-# `config` is non-empty, since the chart then manages its own ConfigMap.
+# -- Reference to an existing ConfigMap holding rule configuration in its
+# "config.yaml" key, read via the Kubernetes API — never mounted as a
+# volume. Format is "(namespace/)name"; the namespace defaults to the
+# controller's own namespace when omitted. Ignored when `config` is
+# non-empty, since the chart then manages its own ConfigMap.
 configMap: ""
 
 healthz:
   port: 10258
 
 rbac:
-  # -- Create the ClusterRole/ClusterRoleBinding (Nodes, Events) and the
+  # -- Create the ClusterRole/ClusterRoleBinding (Nodes, Node status,
+  # ConfigMaps, Events) and the
   # Role/RoleBinding (leader-election Lease) this chart needs.
   create: true
 

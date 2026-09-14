@@ -1,0 +1,22 @@
+# Example values exercising every rule map. Used by hack/test-chart.sh and
+# validated against the controller's config schema by pkg/config tests.
+config:
+  externalIPs:
+    edge:
+      nodeSelector:
+        topology.kubernetes.io/zone: eu-central-1a
+      externalIPs:
+        - 2001:db8::10
+        - 203.0.113.10
+  labels:
+    edge:
+      providerIDPattern: '^custom://edge-'
+      labels:
+        environment: production
+        node-role.kubernetes.io/public: ""
+  annotations:
+    edge:
+      nodeSelector:
+        topology.kubernetes.io/zone: eu-central-1a
+      annotations:
+        example.com/rack: r42

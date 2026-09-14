@@ -17,6 +17,8 @@ spec:
     spec:
       serviceAccountName: kubeling
       priorityClassName: system-cluster-critical
+      # Only one replica is active at a time (leader election). With
+      # hostNetwork, each replica needs its own control-plane node.
       # Runs on control-plane nodes so it can start before other nodes have
       # been initialized by this very controller. Adjust or remove the
       # nodeSelector/tolerations below to match your cluster's node layout.
@@ -33,15 +35,16 @@ spec:
           effect: NoSchedule
       containers:
         - name: kubeling
-          image: ghcr.io/steigr/kubeling:latest
+          image: git.example.com/platform/kubeling:latest
           args:
             - --provider-id=custom
             - --leader-elect=true
             - --leader-elect-namespace=kube-system
-          # Uncomment to apply externalIPs from a "config.yaml" key in a
-          # ConfigMap, matched onto Nodes by nodeSelector. Read via the API,
-          # never mounted. "(namespace/)name" — the namespace defaults to
-          # this Deployment's own namespace when omitted.
+          # Uncomment to apply externalIPs, labels and annotations from the
+          # rules in a ConfigMap's "config.yaml" key (see
+          # examples/configmap.yaml). Read via the API, never mounted.
+          # "(namespace/)name" — the namespace defaults to this
+          # Deployment's own namespace when omitted.
           # env:
           #   - name: CONFIGMAP
           #     value: kubeling-config

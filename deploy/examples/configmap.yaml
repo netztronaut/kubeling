@@ -1,0 +1,27 @@
+# Example rule ConfigMap. Not applied by `kubectl apply -f deploy/`; copy and
+# adapt it, then set the CONFIGMAP environment variable in deployment.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubeling-config
+  namespace: kube-system
+data:
+  config.yaml: |
+    externalIPs:
+      edge:
+        nodeSelector:
+          topology.kubernetes.io/zone: eu-central-1a
+        externalIPs:
+          - 2001:db8::10
+          - 203.0.113.10
+    labels:
+      edge:
+        providerIDPattern: '^custom://edge-'
+        labels:
+          environment: production
+    annotations:
+      edge:
+        nodeSelector:
+          topology.kubernetes.io/zone: eu-central-1a
+        annotations:
+          example.com/rack: r42
