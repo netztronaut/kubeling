@@ -202,3 +202,180 @@ func TestMatchingIDs(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+func TestMatchesMoreCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		node  *corev1.Node
+		match config.Match
+		want  bool
+	}{
+		{
+			name:  "nodeSelector requires every key",
+			node:  nodeNamed("n1", map[string]string{"env": "prod"}),
+			match: config.Match{NodeSelector: map[string]string{"env": "prod", "zone": "edge"}},
+			want:  false,
+		},
+		{
+			name:  "nodeSelector against a node without labels",
+			node:  nodeNamed("n1", nil),
+			match: config.Match{NodeSelector: map[string]string{"env": "prod"}},
+			want:  false,
+		},
+		{
+			name:  "empty nodeSelector imposes no constraint",
+			node:  nodeNamed("n1", nil),
+			match: config.Match{NodeSelector: map[string]string{}},
+			want:  true,
+		},
+		{
+			name:  "unanchored pattern matches a substring",
+			node:  nodeWithProviderID("custom://rack-1/edge-7"),
+			match: config.Match{ProviderIDPattern: `edge-\d+`},
+			want:  true,
+		},
+		{
+			name:  "pattern that allows an empty providerID",
+			node:  &corev1.Node{},
+			match: config.Match{ProviderIDPattern: `^$`},
+			want:  true,
+		},
+		{
+			name: "matchFields on metadata.name matches",
+			node: nodeNamed("server-a", nil),
+			match: config.Match{SelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{
+				expr("metadata.name", corev1.NodeSelectorOpIn, "server-a"),
+			}}}},
+			want: true,
+		},
+		{
+			name: "matchFields NotIn",
+			node: nodeNamed("server-a", nil),
+			match: config.Match{SelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{
+				expr("metadata.name", corev1.NodeSelectorOpNotIn, "server-b"),
+			}}}},
+			want: true,
+		},
+		{
+			name: "matchExpressions and matchFields within one term are ANDed",
+			node: nodeNamed("server-a", map[string]string{"env": "staging"}),
+			match: config.Match{SelectorTerms: []corev1.NodeSelectorTerm{{
+				MatchExpressions: []corev1.NodeSelectorRequirement{expr("env", corev1.NodeSelectorOpIn, "prod")},
+				MatchFields:      []corev1.NodeSelectorRequirement{expr("metadata.name", corev1.NodeSelectorOpIn, "server-a")},
+			}}},
+			want: false,
+		},
+		{
+			name: "selectorTerms Gt",
+			node: nodeNamed("n1", map[string]string{"example.com/cores": "32"}),
+			match: config.Match{SelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{
+				expr("example.com/cores", corev1.NodeSelectorOpGt, "16"),
+			}}}},
+			want: true,
+		},
+		{
+			name: "selectorTerms Lt",
+			node: nodeNamed("n1", map[string]string{"example.com/cores": "32"}),
+			match: config.Match{SelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{
+				expr("example.com/cores", corev1.NodeSelectorOpLt, "16"),
+			}}}},
+			want: false,
+		},
+		{
+			name: "every constraint type holding",
+			node: func() *corev1.Node {
+				n := nodeNamed("edge-1", map[string]string{"env": "prod"})
+				n.Spec.ProviderID = "custom://edge-1"
+				return n
+			}(),
+			match: config.Match{
+				NodeSelector: map[string]string{"env": "prod"},
+				SelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{
+					expr("metadata.name", corev1.NodeSelectorOpIn, "edge-1"),
+				}}},
+				ProviderIDPattern: `^custom://edge-`,
+			},
+			want: true,
+		},
+		{
+			name: "providerIDPattern failing with every other constraint holding",
+			node: func() *corev1.Node {
+				n := nodeNamed("edge-1", map[string]string{"env": "prod"})
+				n.Spec.ProviderID = "metal://edge-1"
+				return n
+			}(),
+			match: config.Match{
+				NodeSelector: map[string]string{"env": "prod"},
+				SelectorTerms: []corev1.NodeSelectorTerm{{MatchFields: []corev1.NodeSelectorRequirement{
+					expr("metadata.name", corev1.NodeSelectorOpIn, "edge-1"),
+				}}},
+				ProviderIDPattern: `^custom://edge-`,
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matches(tt.node, tt.match); got != tt.want {
+				t.Errorf("matches() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompilePattern(t *testing.T) {
+	const pattern = `^custom://compile-pattern-test-`
+
+	first, err := compilePattern(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := compilePattern(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Error("compilePattern did not return the cached *regexp.Regexp")
+	}
+	if !first.MatchString("custom://compile-pattern-test-1") {
+		t.Error("compiled pattern does not match")
+	}
+
+	const invalid = `compile-pattern-test-(`
+	if _, err := compilePattern(invalid); err == nil {
+		t.Fatal("expected an error for an invalid pattern")
+	}
+	if _, cached := patterns.Load(invalid); cached {
+		t.Error("an invalid pattern was cached")
+	}
+}
+
+func TestMatchingIDsWithoutMatches(t *testing.T) {
+	match := func(r config.AnnotationRule) config.Match { return r.Match }
+
+	if got := matchingIDs(nodeNamed("n1", nil), map[string]config.AnnotationRule(nil), match); got != nil {
+		t.Errorf("nil rules: got %v, want nil", got)
+	}
+	rules := map[string]config.AnnotationRule{
+		"edge": {Match: config.Match{NodeSelector: map[string]string{"zone": "edge"}}},
+	}
+	if got := matchingIDs(nodeNamed("n1", nil), rules, match); got != nil {
+		t.Errorf("no matching rules: got %v, want nil", got)
+	}
+}
+
+func TestMatchingIDsIsSorted(t *testing.T) {
+	rules := map[string]config.ExternalIPRule{}
+	for _, id := range []string{"zeta", "alpha", "mu", "beta", "10", "9"} {
+		rules[id] = config.ExternalIPRule{}
+	}
+	match := func(r config.ExternalIPRule) config.Match { return r.Match }
+
+	want := []string{"10", "9", "alpha", "beta", "mu", "zeta"}
+	for range 20 { // map iteration order is randomized
+		if got := matchingIDs(&corev1.Node{}, rules, match); !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}

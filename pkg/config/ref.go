@@ -5,7 +5,8 @@ import (
 	"strings"
 )
 
-const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+// serviceAccountNamespaceFile is a variable so tests can point it elsewhere.
+var serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // ParseRef splits a "(namespace/)name" ConfigMap reference. An empty
 // namespace means the caller should fall back to OwnNamespace.

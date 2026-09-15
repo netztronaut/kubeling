@@ -144,3 +144,54 @@ labels:
 		t.Fatalf("expected strict decoding to reject matchExpression")
 	}
 }
+
+func TestConfigValidateNamesTheRule(t *testing.T) {
+	broken := Match{ProviderIDPattern: `(`}
+	tests := map[string]Config{
+		`externalIPs rule "x"`: {ExternalIPs: map[string]ExternalIPRule{"x": {Match: broken}}},
+		`labels rule "x"`:      {Labels: map[string]LabelRule{"x": {Match: broken}}},
+		`annotations rule "x"`: {Annotations: map[string]AnnotationRule{"x": {Match: broken}}},
+	}
+	for want, cfg := range tests {
+		t.Run(want, func(t *testing.T) {
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "invalid providerIDPattern") {
+				t.Errorf("error = %v, want it to name %s and the pattern", err, want)
+			}
+		})
+	}
+}
+
+func TestValidateSelectorTermsAcceptsEveryOperator(t *testing.T) {
+	terms := []corev1.NodeSelectorTerm{
+		{MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "a", Operator: corev1.NodeSelectorOpIn, Values: []string{"1", "2"}},
+			{Key: "b", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1"}},
+			{Key: "c", Operator: corev1.NodeSelectorOpExists},
+			{Key: "d", Operator: corev1.NodeSelectorOpDoesNotExist},
+			{Key: "e", Operator: corev1.NodeSelectorOpGt, Values: []string{"1"}},
+			{Key: "f", Operator: corev1.NodeSelectorOpLt, Values: []string{"10"}},
+		}},
+		{MatchFields: []corev1.NodeSelectorRequirement{
+			{Key: "metadata.name", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"server-a"}},
+		}},
+	}
+	if err := validateSelectorTerms(terms); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateSelectorTermsErrorPositions(t *testing.T) {
+	terms := []corev1.NodeSelectorTerm{
+		{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "a", Operator: corev1.NodeSelectorOpExists}}},
+		{MatchFields: []corev1.NodeSelectorRequirement{
+			{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{"a"}},
+			{Key: "spec.unschedulable", Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}},
+		}},
+		{},
+	}
+	err := validateSelectorTerms(terms)
+	if err == nil || !strings.Contains(err.Error(), "selectorTerms[1].matchFields[1]") {
+		t.Errorf("error = %v, want it to point at selectorTerms[1].matchFields[1]", err)
+	}
+}

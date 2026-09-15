@@ -195,7 +195,12 @@ since there's nothing to gracefully drain.
   through the `harness` in `pkg/controller/controller_test.go`: its Node
   informer is never started, `sync` copies a Node from the fake API into the
   informer cache by hand, and `converge` calls `reconcile` until it stops
-  writing, returning the number of writes.
+  writing, returning the number of writes. `failUpdates` injects API errors
+  (e.g. conflicts) per subresource. `MetadataController` scenarios run once
+  per domain via `metadataDomains`.
+- `TestControllersConverge` runs every controller against a started
+  informer, the way `main.go` wires them; the fake tracker doesn't enforce
+  resourceVersion conflicts, so it only asserts eventual convergence.
 - `pkg/config/examples_test.go` validates `charts/kubeling/ci/*.yaml` and
   `deploy/examples/configmap.yaml` with `config.Parse` — keep those examples
   covering every rule map when the schema changes.

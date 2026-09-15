@@ -43,7 +43,10 @@ func NewWatcher(client kubernetes.Interface, namespace, name string, resync time
 
 	selector := fields.OneTermEqualSelector("metadata.name", name).String()
 	w.informer = cache.NewSharedIndexInformer(
-		&cache.ListWatch{
+		// Wrapped like client-go's generated informers, so clients that
+		// can't stream initial events (such as the fake clientset) opt out
+		// of WatchList instead of stalling the initial sync.
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
 			ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {
 				options.FieldSelector = selector
 				return client.CoreV1().ConfigMaps(namespace).List(ctx, options)
@@ -52,7 +55,7 @@ func NewWatcher(client kubernetes.Interface, namespace, name string, resync time
 				options.FieldSelector = selector
 				return client.CoreV1().ConfigMaps(namespace).Watch(ctx, options)
 			},
-		},
+		}, client),
 		&corev1.ConfigMap{},
 		resync,
 		cache.Indexers{},
