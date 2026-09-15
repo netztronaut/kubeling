@@ -44,18 +44,63 @@ make deploy VALUES=<file>      # helm upgrade --install in the current kube cont
 The repository is hosted on GitHub at `github.com/netztronaut/kubeling` and
 mirrored to a private Forgejo instance. CI just runs `make check` on
 `runs-on: ubuntu-latest`, in `.github/workflows/ci.yml` and, for the mirror,
-`.forgejo/workflows/ci.yml`.
-`.github/workflows/release.yml` publishes the image to
-`ghcr.io/netztronaut/kubeling` and the chart to
-`oci://ghcr.io/netztronaut/charts/kubeling` on pushes to `main` (dev chart
-versions `<version>-main.<run>`) and `v*` tags (which must match the
-`Chart.yaml` version); for tags, a final job runs GoReleaser
-(`.goreleaser.yaml`) to create the GitHub release with binaries and the
-packaged chart, and it builds a `--snapshot` on every other event.
-README.md's "Images and charts" has the tag scheme. Lint rules live
-in `.golangci.yml` (notably: use `slices`, not `sort`). `go.mod` pins
-`toolchain go1.26.8` because the auto-selected go1.26.0 toolchain breaks
-coverage builds.
+`.forgejo/workflows/ci.yml`. Lint rules live in `.golangci.yml` (notably:
+use `slices`, not `sort`). `go.mod` pins `toolchain go1.26.8` because the
+auto-selected go1.26.0 toolchain breaks coverage builds.
+
+## Releasing
+
+`.github/workflows/release.yml` runs four jobs in sequence on pushes to
+`main`, `v*` tags, pull requests and manual dispatch:
+
+1. **`version`** derives everything else from the ref and
+   `charts/kubeling/Chart.yaml`'s `version`: on `main`, chart
+   `<version>-main.<run>` pinned to image `sha-<short>`; on a `vX.Y.Z[-*]`
+   tag, chart and appVersion `X.Y.Z[-*]`, and the job **fails unless the
+   tag's `X.Y.Z` equals `Chart.yaml`'s `version`**; anywhere else,
+   `<version>-dev.<run>` with nothing pushed.
+2. **`image`** builds `linux/amd64,linux/arm64` with docker/metadata-action
+   tags (`latest`/`main`/`sha-<short>` on `main`; `X.Y.Z[-*]` on tags,
+   plus `X.Y` for final releases) and pushes to `ghcr.io/netztronaut/kubeling`.
+3. **`chart`** runs `helm package --version --app-version` (Chart.yaml's
+   `appVersion: "latest"` is always overridden) and pushes to
+   `oci://ghcr.io/netztronaut/charts/kubeling`; on tags it also uploads the
+   `.tgz` as the `chart` artifact.
+4. **`release`** runs GoReleaser (`.goreleaser.yaml`): on tags it creates
+   the GitHub release with linux/darwin × amd64/arm64 archives,
+   `checksums.txt`, the changelog and the chart `.tgz` as an extra file
+   (`-*` tags become prereleases); everywhere else it builds a `--snapshot`.
+
+To cut a release: bump `version` in `Chart.yaml` and the pinned
+`--version` example in README.md, push `main` to both remotes, wait for
+its CI and Release runs, then push an annotated `vX.Y.Z` tag to both.
+Push named refs only (`main`, `vX.Y.Z`), never `--tags` or `--mirror`.
+
+Gotchas learned the hard way:
+
+- **Snapshot builds skip publishing**, so pull requests and `main` never
+  exercise the release upload. Problems there (like `extra_files`) only
+  show up in the `release` job of a tag run; always watch it.
+- **GoReleaser's `extra_files` globs don't support absolute paths**
+  (`stat static prefix .//home/...: invalid argument`). The chart artifact
+  is therefore downloaded into the git-ignored `.release/chart` inside the
+  checkout (`CHART_PACKAGE_DIR`); `dist/` won't do, since `--clean` wipes it.
+- A failed `release` job leaves an **empty draft release**, which a re-run
+  doesn't reuse (it looks releases up by tag, and drafts aren't attached to
+  one). Delete the draft by hand.
+- Re-running a tag's workflow uses the workflow file **at the tagged
+  commit**, so a workflow fix needs a new tag or a moved tag. If a tag push
+  doesn't start a run, `gh workflow run release.yml --ref vX.Y.Z` works;
+  `version` still sees `refs/tags/...`.
+- **New ghcr.io packages start private**, regardless of repo visibility
+  (e.g. after the repository is recreated), and visibility can only be
+  changed in the package settings UI, not via the API.
+- To verify anonymous pulls, use the raw registry API (anonymous token from
+  `https://ghcr.io/token?scope=repository:<repo>:pull&service=ghcr.io`,
+  then the manifest). `docker pull`/`helm pull` can silently pick up stored
+  credentials even with empty `DOCKER_CONFIG`/`HELM_REGISTRY_CONFIG`.
+
+README.md's "Images and charts" documents the tag scheme for users.
 
 ## Architecture
 
