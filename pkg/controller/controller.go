@@ -1,8 +1,10 @@
-// Package controller implements Kubeling's Node controllers: NodeController
-// stamps a ProviderID onto every Node and removes the taint the kubelet sets
-// when started with --cloud-provider=external, while ExternalIPController
-// and MetadataController (labels, annotations) apply ConfigMap-defined rules
-// onto matching Nodes.
+// Package controller implements Kubeling's Node controllers, each applying
+// one map of ConfigMap-defined rules onto matching Nodes:
+// ExternalIPController and MetadataController (labels, annotations) manage
+// Node addresses and metadata, while InitializationController removes the
+// taint the kubelet sets when started with --cloud-provider=external (and
+// optionally stamps a providerID) on Nodes no cloud-controller-manager
+// takes care of.
 package controller
 
 import (

@@ -3,9 +3,8 @@
 A Helm chart for [Kubeling](../../README.md), a cloud-controller-manager
 companion that manages the parts of a Node outside a
 cloud-controller-manager's responsibility: it applies `externalIPs`, labels
-and annotations from rules in a ConfigMap, and initializes Nodes for
-kubelets running with `--cloud-provider=external` in clusters without a
-cloud.
+and annotations from rules in a ConfigMap, and can initialize the Nodes no
+cloud-controller-manager takes care of.
 
 ## Installing
 
@@ -38,12 +37,12 @@ be free on the chosen node.
 
 ## Rule configuration
 
-The controller can apply `externalIPs`, labels and annotations to Nodes
-from rules it reads from a ConfigMap via the Kubernetes API (get/list/watch
-— never mounted as a volume, so edits apply within seconds). The chart can
-manage that ConfigMap for you via `config`, or point the controller at one
-you manage yourself via `configMap`. With neither set, only providerID and
-taint handling run. The rule semantics — matching, conflict handling and
+The controller initializes Nodes and applies `externalIPs`, labels and
+annotations to them from rules it reads from a ConfigMap via the Kubernetes
+API (get/list/watch — never mounted as a volume, so edits apply within
+seconds). The chart can manage that ConfigMap for you via `config`, or point
+the controller at one you manage yourself via `configMap`. With neither
+set, the controller does nothing. The rule semantics — matching, conflict handling and
 the `kubeling.io/*` Node conditions — are described in the
 [main README](../../README.md#rule-configuration).
 
@@ -56,6 +55,11 @@ chart creates, and the controller is pointed at it automatically:
 ```yaml
 # values.yaml
 config:
+  initialization:
+    bare-metal:
+      nodeSelector:
+        example.com/provider: bare-metal
+      providerIDScheme: custom
   externalIPs:
     edge:
       nodeSelector:
@@ -120,7 +124,6 @@ but nothing reads or writes through them while rule processing is off.
 | `image.tag` | `""` (chart `appVersion`) | Container image tag. |
 | `image.pullPolicy` | `""` (Kubernetes default) | Image pull policy. Unset, Kubernetes pulls `latest` tags on every start and other tags only when missing. |
 | `imagePullSecrets` | `[]` | Image pull secrets. |
-| `providerID` | `custom` | Scheme used for the ProviderID stamped onto Nodes (`providerID = <providerID>://<node-name>`). |
 | `workers` | `2` | Number of concurrent Node reconcile workers per controller. |
 | `resyncPeriod` | `10m` | Node and ConfigMap informer resync period. |
 | `leaderElection.enabled` | `true` | Enable leader election across replicas. |

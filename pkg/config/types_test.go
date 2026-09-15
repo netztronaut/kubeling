@@ -41,6 +41,31 @@ func TestConfigValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid pattern in initialization is rejected", func(t *testing.T) {
+		cfg := Config{Initialization: map[string]InitializationRule{
+			"broken": {Match: Match{ProviderIDPattern: `(`}},
+		}}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected an error for an unparseable regex")
+		}
+	})
+
+	t.Run("providerIDScheme must be a URI scheme", func(t *testing.T) {
+		for scheme, valid := range map[string]bool{
+			"":          true,
+			"custom":    true,
+			"k3s+metal": true,
+			"custom://": false,
+			"1metal":    false,
+			"my scheme": false,
+		} {
+			cfg := Config{Initialization: map[string]InitializationRule{"a": {ProviderIDScheme: scheme}}}
+			if err := cfg.Validate(); (err == nil) != valid {
+				t.Errorf("providerIDScheme %q: err = %v, want valid = %v", scheme, err, valid)
+			}
+		}
+	})
+
 	t.Run("invalid pattern in externalIPs is rejected", func(t *testing.T) {
 		cfg := Config{ExternalIPs: map[string]ExternalIPRule{
 			"broken": {Match: Match{ProviderIDPattern: `(`}},

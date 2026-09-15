@@ -28,9 +28,6 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# -- Scheme used for the ProviderID stamped onto Nodes: providerID = <providerID>://<node-name>.
-providerID: custom
-
 # -- Number of concurrent Node reconcile workers.
 workers: 2
 
@@ -50,11 +47,16 @@ extraArgs: []
 
 # -- Rule configuration, rendered with `toYaml` into the "config.yaml" key
 # of a ConfigMap this chart creates and points the controller at. It holds
-# up to three independent rule maps, each keyed by an arbitrary rule ID and
+# up to four independent rule maps, each keyed by an arbitrary rule ID and
 # matched by nodeSelector, selectorTerms and/or providerIDPattern — all
 # ANDed, selectorTerms as in a Pod's node affinity (see the chart README and
 # ci/rules-values.yaml for a complete example):
 # config:
+#   initialization:
+#     bare-metal:
+#       nodeSelector:
+#         example.com/provider: bare-metal
+#       providerIDScheme: custom
 #   externalIPs:
 #     edge:
 #       nodeSelector:
@@ -136,8 +138,8 @@ priorityClassName: system-cluster-critical
 nodeSelector: {}
 
 # -- Tolerates the control-plane taint and the taints of Nodes that aren't
-# initialized or ready yet, so the controller can start before other Nodes
-# have been initialized by this very controller.
+# initialized or ready yet, so the controller can start before Nodes have
+# been initialized, by a cloud-controller-manager or by this very controller.
 tolerations:
   - key: node-role.kubernetes.io/control-plane
     operator: Exists

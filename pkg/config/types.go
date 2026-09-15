@@ -47,18 +47,44 @@ type AnnotationRule struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
-// Config is the schema of the "config.yaml" key inside the ConfigMap. Each
-// of the three maps is independently keyed by an arbitrary rule ID and
-// reconciled by its own controller.
-type Config struct {
-	ExternalIPs map[string]ExternalIPRule `json:"externalIPs,omitempty"`
-	Labels      map[string]LabelRule      `json:"labels,omitempty"`
-	Annotations map[string]AnnotationRule `json:"annotations,omitempty"`
+// InitializationRule opts matching Nodes into initialization: Kubeling
+// removes the node.cloudprovider.kubernetes.io/uninitialized taint the
+// kubelet sets when started with --cloud-provider=external, doing what a
+// cloud-controller-manager would do for Nodes no cloud-controller-manager
+// takes care of. Nodes matching no rule are left alone.
+//
+// When ProviderIDScheme is set and a matching Node has no providerID yet,
+// Kubeling also stamps "<ProviderIDScheme>://<node-name>" onto it.
+type InitializationRule struct {
+	Match
+	ProviderIDScheme string `json:"providerIDScheme,omitempty"`
 }
 
+// Config is the schema of the "config.yaml" key inside the ConfigMap. Each
+// of the four maps is independently keyed by an arbitrary rule ID and
+// reconciled by its own controller.
+type Config struct {
+	Initialization map[string]InitializationRule `json:"initialization,omitempty"`
+	ExternalIPs    map[string]ExternalIPRule     `json:"externalIPs,omitempty"`
+	Labels         map[string]LabelRule          `json:"labels,omitempty"`
+	Annotations    map[string]AnnotationRule     `json:"annotations,omitempty"`
+}
+
+// providerIDScheme is a URI scheme as defined by RFC 3986.
+var providerIDScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
+
 // Validate reports an error if any rule's ProviderIDPattern doesn't
-// compile as a regular expression or its SelectorTerms are malformed.
+// compile as a regular expression, its SelectorTerms are malformed, or an
+// initialization rule's ProviderIDScheme isn't a valid URI scheme.
 func (c Config) Validate() error {
+	for id, r := range c.Initialization {
+		if err := validateMatch(r.Match); err != nil {
+			return fmt.Errorf("initialization rule %q: %w", id, err)
+		}
+		if r.ProviderIDScheme != "" && !providerIDScheme.MatchString(r.ProviderIDScheme) {
+			return fmt.Errorf("initialization rule %q: invalid providerIDScheme %q: must be a URI scheme like \"custom\"", id, r.ProviderIDScheme)
+		}
+	}
 	for id, r := range c.ExternalIPs {
 		if err := validateMatch(r.Match); err != nil {
 			return fmt.Errorf("externalIPs rule %q: %w", id, err)

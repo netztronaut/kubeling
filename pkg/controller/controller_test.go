@@ -130,7 +130,7 @@ func condition(node *corev1.Node, t corev1.NodeConditionType) *corev1.NodeCondit
 
 func TestEnqueueAll(t *testing.T) {
 	h := newHarness(t, node("a", nil), node("b", nil))
-	c, err := NewNodeController(h.client, h.nodes, "custom")
+	c, err := NewInitializationController(h.client, h.nodes, &staticConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestEnqueueAll(t *testing.T) {
 
 func TestEnqueueAllWithoutNodes(t *testing.T) {
 	h := newHarness(t)
-	c, err := NewNodeController(h.client, h.nodes, "custom")
+	c, err := NewInitializationController(h.client, h.nodes, &staticConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestEnqueue(t *testing.T) {
 
 func TestInformerEventsEnqueue(t *testing.T) {
 	h := newHarness(t)
-	c, err := NewNodeController(h.client, h.nodes, "custom")
+	c, err := NewInitializationController(h.client, h.nodes, &staticConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestProcessNextItem(t *testing.T) {
 
 func TestRunFailsWithoutCacheSync(t *testing.T) {
 	h := newHarness(t)
-	c, err := NewNodeController(h.client, h.nodes, "custom")
+	c, err := NewInitializationController(h.client, h.nodes, &staticConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,6 +346,10 @@ func TestControllersConverge(t *testing.T) {
 	factory := informers.NewSharedInformerFactory(client, 0)
 	nodes := factory.Core().V1().Nodes()
 	source := &staticConfig{config.Config{
+		Initialization: map[string]config.InitializationRule{"edge": {
+			Match:            config.Match{NodeSelector: map[string]string{"zone": "edge"}},
+			ProviderIDScheme: "custom",
+		}},
 		ExternalIPs: map[string]config.ExternalIPRule{"edge": {
 			Match:       config.Match{NodeSelector: map[string]string{"zone": "edge"}},
 			ExternalIPs: []string{"203.0.113.10", "2001:db8::10"},
@@ -362,7 +366,7 @@ func TestControllersConverge(t *testing.T) {
 		}},
 	}}
 
-	nc, err := NewNodeController(client, nodes, "custom")
+	ic, err := NewInitializationController(client, nodes, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +387,7 @@ func TestControllersConverge(t *testing.T) {
 	factory.Start(ctx.Done())
 	runners := []interface {
 		Run(context.Context, int) error
-	}{nc, lc, ac, eic}
+	}{ic, lc, ac, eic}
 	done := make(chan error, len(runners))
 	for _, r := range runners {
 		go func() { done <- r.Run(ctx, 2) }()

@@ -1,6 +1,13 @@
 # Example values exercising every rule map. Used by hack/test-chart.sh and
 # validated against the controller's config schema by pkg/config tests.
 config:
+  initialization:
+    kubelet-provider-id:
+      providerIDPattern: '^metal://'
+    bare-metal:
+      nodeSelector:
+        example.com/provider: bare-metal
+      providerIDScheme: custom
   externalIPs:
     edge:
       nodeSelector:

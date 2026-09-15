@@ -1,10 +1,11 @@
-// Command kubeling is a minimal out-of-tree cloud
-// controller manager for clusters that have no real cloud backing them. It
-// lets kubelets run with --cloud-provider=external by stamping a
-// "custom://<node-name>" ProviderID onto every Node and removing the
-// node.cloudprovider.kubernetes.io/uninitialized taint. It can optionally
-// apply externalIPs, labels and annotations to Nodes based on rules read
-// from a ConfigMap, each matched by nodeSelector and/or providerIDPattern.
+// Command kubeling is a cloud-controller-manager companion that manages the
+// parts of a Node outside a cloud-controller-manager's responsibility. It
+// applies externalIPs, labels and annotations to Nodes based on rules read
+// from a ConfigMap, each matched by nodeSelector, selectorTerms and/or
+// providerIDPattern, and initializes the Nodes selected by initialization
+// rules — removing the node.cloudprovider.kubernetes.io/uninitialized taint
+// and optionally stamping a providerID — for clusters, or Nodes, without a
+// cloud-controller-manager.
 package main
 
 import (
@@ -38,7 +39,6 @@ func main() {
 
 	var (
 		kubeconfig              string
-		providerName            string
 		leaderElect             bool
 		leaderElectionNamespace string
 		leaseLockName           string
@@ -49,14 +49,13 @@ func main() {
 	)
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig file. If unset, in-cluster config is used.")
-	flag.StringVar(&providerName, "provider-id", "custom", "Scheme used for the ProviderID stamped onto Nodes (providerID = <provider-id>://<node-name>).")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Enable leader election so only one replica reconciles Nodes at a time.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "kube-system", "Namespace holding the leader election Lease.")
 	flag.StringVar(&leaseLockName, "leader-elect-lease-name", "kubeling", "Name of the leader election Lease.")
 	flag.DurationVar(&resyncPeriod, "resync-period", 10*time.Minute, "Node and ConfigMap informer resync period.")
 	flag.IntVar(&workers, "workers", 2, "Number of node reconcile workers.")
 	flag.StringVar(&healthAddr, "health-addr", ":10258", "Address to serve /healthz on.")
-	flag.StringVar(&configMapRef, "configmap", os.Getenv("CONFIGMAP"), "ConfigMap holding the rule configuration, as \"(namespace/)name\". The namespace defaults to this controller's own namespace when omitted. Read via the Kubernetes API, never mounted as a volume. Leave empty to disable rule processing. Defaults to the CONFIGMAP environment variable.")
+	flag.StringVar(&configMapRef, "configmap", os.Getenv("CONFIGMAP"), "ConfigMap holding the rule configuration, as \"(namespace/)name\". The namespace defaults to this controller's own namespace when omitted. Read via the Kubernetes API, never mounted as a volume. Leave empty to disable rule processing, including Node initialization. Defaults to the CONFIGMAP environment variable.")
 	flag.Parse()
 
 	restConfig, err := loadConfig(kubeconfig)
@@ -79,14 +78,9 @@ func main() {
 	factory := informers.NewSharedInformerFactory(client, resyncPeriod)
 	nodeInformer := factory.Core().V1().Nodes()
 
-	nc, err := controller.NewNodeController(client, nodeInformer, providerName)
-	if err != nil {
-		klog.ErrorS(err, "failed to build node controller")
-		os.Exit(1)
-	}
-
 	var (
 		watcher *config.Watcher
+		ic      *controller.InitializationController
 		lc      *controller.MetadataController[config.LabelRule]
 		ac      *controller.MetadataController[config.AnnotationRule]
 		eic     *controller.ExternalIPController
@@ -98,6 +92,10 @@ func main() {
 		}
 		if watcher, err = config.NewWatcher(client, cmNamespace, cmName, resyncPeriod); err != nil {
 			klog.ErrorS(err, "failed to build configmap watcher")
+			os.Exit(1)
+		}
+		if ic, err = controller.NewInitializationController(client, nodeInformer, watcher); err != nil {
+			klog.ErrorS(err, "failed to build initialization controller")
 			os.Exit(1)
 		}
 		if lc, err = controller.NewLabelController(client, nodeInformer, watcher); err != nil {
@@ -113,6 +111,7 @@ func main() {
 			os.Exit(1)
 		}
 		watcher.OnChange = func() {
+			ic.EnqueueAll()
 			lc.EnqueueAll()
 			ac.EnqueueAll()
 			eic.EnqueueAll()
@@ -124,14 +123,14 @@ func main() {
 
 		var wg sync.WaitGroup
 
-		wg.Go(func() {
-			if err := nc.Run(ctx, workers); err != nil {
-				klog.ErrorS(err, "node controller exited with error")
-			}
-		})
-
-		if lc != nil {
+		if watcher != nil {
 			go watcher.Run(ctx)
+
+			wg.Go(func() {
+				if err := ic.Run(ctx, workers); err != nil {
+					klog.ErrorS(err, "initialization controller exited with error")
+				}
+			})
 
 			wg.Go(func() {
 				if err := lc.Run(ctx, workers); err != nil {

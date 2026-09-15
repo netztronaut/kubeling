@@ -49,7 +49,6 @@ spec:
           imagePullPolicy: {{ . }}
           {{- end }}
           args:
-            - --provider-id={{ .Values.providerID }}
             - --leader-elect={{ .Values.leaderElection.enabled }}
             - --leader-elect-namespace={{ .Values.leaderElection.namespace }}
             - --leader-elect-lease-name={{ .Values.leaderElection.leaseName }}

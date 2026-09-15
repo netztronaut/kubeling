@@ -36,6 +36,7 @@ expect "default: renders the Deployment" '^kind: Deployment$' "$out"
 expect "default: uses the chart image repository" 'image: "ghcr.io/netztronaut/kubeling:latest"' "$out"
 reject "default: creates no ConfigMap" '^kind: ConfigMap$' "$out"
 reject "default: sets no CONFIGMAP env" 'name: CONFIGMAP' "$out"
+reject "default: passes no --provider-id" '--provider-id' "$out"
 reject "default: sets no imagePullPolicy" 'imagePullPolicy:' "$out"
 reject "default: requires no nodeSelector" 'nodeSelector:' "$out"
 expect "default: prefers control-plane nodes" 'preferredDuringSchedulingIgnoredDuringExecution:' "$out"
@@ -43,7 +44,7 @@ expect "default: tolerates the control-plane taint" 'key: node-role.kubernetes.i
 
 out="$(render --values "$chart/ci/rules-values.yaml")"
 expect "config: creates the ConfigMap" '^kind: ConfigMap$' "$out"
-expect "config: renders every rule map" '^    (externalIPs|labels|annotations):$' "$out"
+expect "config: renders every rule map" '^    (initialization|externalIPs|labels|annotations):$' "$out"
 expect "config: points the controller at the chart ConfigMap" 'value: "kubeling-config"' "$out"
 
 out="$(render --set configMap=other/rules)"

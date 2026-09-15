@@ -6,26 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A companion to the out-of-tree [cloud-controller-manager](https://kubernetes.io/docs/concepts/architecture/cloud-controller/)
 that manages the parts of a Node beyond a cloud-controller-manager's
-responsibility. It does three things:
+responsibility. Everything it does is driven by independently-reconciled
+rule maps read live from a ConfigMap (never mounted as a volume — read via
+the Kubernetes API so changes apply within seconds, no pod restart); without
+one it does nothing. Every rule, in every map, is matched by any combination
+(ANDed) of `nodeSelector`, node-affinity-style `selectorTerms`, and a regex
+against `providerID`.
 
-1. Applies `externalIPs`, labels, and annotations to Nodes,
-   each from its own independently-reconciled rule map read live from a
-   ConfigMap (never mounted as a volume — read via the Kubernetes API so
-   changes apply within seconds, no pod restart). Every rule, in every map,
-   is matched by any combination (ANDed) of `nodeSelector`, node-affinity-style
-   `selectorTerms`, and a regex against `providerID`.
-2. Each of those three domains maintains its own `kubeling.io/` NodeCondition
-   (`Labeled`, `Annotated`, `ExternalIPsApplied`) — present on a Node only
-   while at least one rule for that domain currently matches it, tracking
-   live applicability (`Pending`/`Applied`) separately from the
+1. `externalIPs`, `labels` and `annotations` rules apply those values to
+   Nodes. Each of those three domains maintains its own `kubeling.io/`
+   NodeCondition (`ExternalIPsApplied`, `Labeled`, `Annotated`) — present on
+   a Node only while at least one rule for that domain currently matches it,
+   tracking live applicability (`Pending`/`Applied`) separately from the
    labels/annotations/addresses it already wrote, which are never removed
    automatically.
-3. For clusters with no real cloud backing them, covers the minimal
-   cloud-controller-manager contract so kubelets can run with
-   `--cloud-provider=external`: stamps
-   `Node.spec.providerID = <provider-id>://<node-name>` (default scheme
-   `custom`) and removes the `node.cloudprovider.kubernetes.io/uninitialized`
-   taint the kubelet sets in external mode. This is always active.
+2. `initialization` rules take over the minimal cloud-controller-manager
+   contract for the Nodes they match, so kubelets running with
+   `--cloud-provider=external` work where no cloud-controller-manager takes
+   care of them: remove the `node.cloudprovider.kubernetes.io/uninitialized`
+   taint and, if a rule sets `providerIDScheme`, stamp
+   `Node.spec.providerID = <providerIDScheme>://<node-name>` onto Nodes
+   without one. Nodes matching no rule are never touched, so Kubeling can run
+   next to a real cloud-controller-manager. No condition.
 
 There is intentionally no instance metadata, zone/region, or load balancer
 support — see README.md for the full behavioral spec (rule semantics,
@@ -120,22 +122,28 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
   configuration through. `*config.Watcher` implements it; tests use a
   static implementation.
 
-- **`pkg/controller.NodeController`** (`node_controller.go`) — always
-  active. Per-Node reconcile: set `providerID` if empty, strip the
-  `uninitialized` taint if present. Conflict errors are swallowed (the
-  informer will observe the newer version and requeue).
-
 - **`pkg/config.Watcher`** (`config/watcher.go`) — a single-ConfigMap
   informer (field-selected by name) that parses the `config.yaml` key with
   `config.Parse` and stores the result in an `atomic.Pointer`. `Parse`
   decodes strictly (`yaml.UnmarshalStrict` — unknown keys are errors) and
   runs `Config.Validate` (every `providerIDPattern` must compile, every
-  `selectorTerms` must parse as scheduler node-affinity terms); on either
+  `selectorTerms` must parse as scheduler node-affinity terms, every
+  `providerIDScheme` must be an RFC 3986 URI scheme); on either
   failure the previous configuration is kept. A missing key or deleted
   ConfigMap clears the configuration. `OnChange` is a caller-supplied hook
   fired on every successful load/clear. Only instantiated when
-  `--configmap`/`CONFIGMAP` is set; the three rule controllers below are
-  nil/absent otherwise.
+  `--configmap`/`CONFIGMAP` is set; the four rule controllers below are
+  nil/absent otherwise, and the binary only runs leader election and
+  `/healthz`.
+
+- **`pkg/controller.InitializationController`**
+  (`initialization_controller.go`) — reads `Config.Initialization`. If no
+  rule matches the Node, it does nothing (no condition to clear). Otherwise
+  one `Update`: set `providerID` if empty and a matching rule sets a
+  `providerIDScheme` (matching rules with different schemes are logged and
+  the Node is skipped entirely, since a providerID is immutable), and strip
+  the `uninitialized` taint if present. Conflict errors are swallowed (the
+  informer will observe the newer version and requeue).
 
 - **`pkg/controller.MetadataController[T]`** (`metadata_controller.go`) — a
   single generic implementation (`T` = `config.LabelRule` or
@@ -170,7 +178,7 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
   place nodeSelector/selectorTerms/providerIDPattern matching happens
   (`selectorTerms` are evaluated with the scheduler's own
   `k8s.io/component-helpers/.../nodeaffinity`; compiled patterns are cached); `matchingIDs[T]` returns the sorted rule IDs matching a Node
-  from any of the three rule maps.
+  from any of the four rule maps.
 
 - **`pkg/controller/conditions.go`** — the three `kubeling.io/...`
   condition types, `pendingCondition`/`appliedCondition` builders,
@@ -183,7 +191,7 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
   value; `OwnNamespace` reads the projected service-account namespace file,
   falling back to `"default"` outside a cluster.
 
-`main.go` wires `watcher.OnChange` to call `EnqueueAll()` on all three rule
+`main.go` wires `watcher.OnChange` to call `EnqueueAll()` on all four rule
 controllers whenever the ConfigMap changes. Leader election wraps a
 `run(ctx)` closure that starts the shared informer factory and all
 controllers' `Run` loops; with `--leader-elect=false` it's called directly.

@@ -20,8 +20,12 @@ func TestParse(t *testing.T) {
 	}{
 		{name: "empty document", raw: ``},
 		{
-			name: "all three rule maps",
+			name: "all four rule maps",
 			raw: `
+initialization:
+  metal:
+    providerIDPattern: '^$'
+    providerIDScheme: custom
 externalIPs:
   edge:
     nodeSelector:
@@ -63,6 +67,15 @@ labels:
 			name:    "malformed yaml is rejected",
 			raw:     "labels: [",
 			wantErr: "parsing config.yaml",
+		},
+		{
+			name: "invalid providerIDScheme is rejected",
+			raw: `
+initialization:
+  broken:
+    providerIDScheme: 'custom://'
+`,
+			wantErr: `initialization rule "broken": invalid providerIDScheme`,
 		},
 		{
 			name: "invalid pattern is rejected",

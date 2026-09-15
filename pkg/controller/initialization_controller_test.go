@@ -8,38 +8,103 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
+	"github.com/netztronaut/kubeling/pkg/config"
 )
 
-func TestNodeControllerReconcile(t *testing.T) {
+func TestInitializationControllerReconcile(t *testing.T) {
+	uninitialized := func(name, providerID string, labels map[string]string) *corev1.Node {
+		n := node(name, labels)
+		n.Spec.ProviderID = providerID
+		n.Spec.Taints = []corev1.Taint{
+			{Key: UninitializedTaintKey, Value: "true", Effect: corev1.TaintEffectNoSchedule},
+			{Key: "example.com/other", Effect: corev1.TaintEffectNoSchedule},
+		}
+		return n
+	}
+
 	tests := []struct {
 		name           string
 		node           *corev1.Node
+		rules          map[string]config.InitializationRule
 		wantWrites     int
 		wantProviderID string
+		wantTainted    bool
 	}{
 		{
-			name: "initializes a new node",
-			node: func() *corev1.Node {
-				n := node("worker-1", nil)
-				n.Spec.Taints = []corev1.Taint{
-					{Key: UninitializedTaintKey, Value: "true", Effect: corev1.TaintEffectNoSchedule},
-					{Key: "example.com/other", Effect: corev1.TaintEffectNoSchedule},
-				}
-				return n
-			}(),
+			name:        "no rules leave the node alone",
+			node:        uninitialized("worker-1", "", nil),
+			wantWrites:  0,
+			wantTainted: true,
+		},
+		{
+			name: "a non-matching rule leaves the node alone",
+			node: uninitialized("worker-1", "hcloud://123", nil),
+			rules: map[string]config.InitializationRule{
+				"metal": {Match: config.Match{ProviderIDPattern: `^metal://`}},
+			},
+			wantWrites:     0,
+			wantProviderID: "hcloud://123",
+			wantTainted:    true,
+		},
+		{
+			name: "a matching providerIDPattern removes the taint and keeps the providerID",
+			node: uninitialized("worker-1", "metal://rack-1/worker-1", nil),
+			rules: map[string]config.InitializationRule{
+				"metal": {Match: config.Match{ProviderIDPattern: `^metal://`}, ProviderIDScheme: "custom"},
+			},
+			wantWrites:     1,
+			wantProviderID: "metal://rack-1/worker-1",
+		},
+		{
+			name: "a providerIDScheme stamps a missing providerID",
+			node: uninitialized("worker-1", "", map[string]string{"example.com/bare-metal": "true"}),
+			rules: map[string]config.InitializationRule{
+				"bare-metal": {
+					Match:            config.Match{NodeSelector: map[string]string{"example.com/bare-metal": "true"}},
+					ProviderIDScheme: "custom",
+				},
+			},
 			wantWrites:     1,
 			wantProviderID: "custom://worker-1",
 		},
 		{
-			name: "keeps an existing providerID",
-			node: func() *corev1.Node {
-				n := node("worker-1", nil)
-				n.Spec.ProviderID = "metal://rack-1/worker-1"
-				n.Spec.Taints = []corev1.Taint{{Key: UninitializedTaintKey, Effect: corev1.TaintEffectNoSchedule}}
-				return n
-			}(),
+			name: "without a providerIDScheme only the taint is removed",
+			node: uninitialized("worker-1", "", nil),
+			rules: map[string]config.InitializationRule{
+				"no-provider-id": {Match: config.Match{ProviderIDPattern: `^$`}},
+			},
+			wantWrites: 1,
+		},
+		{
+			name: "matching rules agreeing on a providerIDScheme stamp it",
+			node: uninitialized("worker-1", "", nil),
+			rules: map[string]config.InitializationRule{
+				"a": {ProviderIDScheme: "custom"},
+				"b": {ProviderIDScheme: "custom"},
+				"c": {},
+			},
 			wantWrites:     1,
-			wantProviderID: "metal://rack-1/worker-1",
+			wantProviderID: "custom://worker-1",
+		},
+		{
+			name: "conflicting providerIDSchemes leave the node alone",
+			node: uninitialized("worker-1", "", nil),
+			rules: map[string]config.InitializationRule{
+				"a": {ProviderIDScheme: "custom"},
+				"b": {ProviderIDScheme: "metal"},
+			},
+			wantWrites:  0,
+			wantTainted: true,
+		},
+		{
+			name: "stamps a providerID onto an already untainted node",
+			node: node("worker-1", nil),
+			rules: map[string]config.InitializationRule{
+				"all": {ProviderIDScheme: "custom"},
+			},
+			wantWrites:     1,
+			wantProviderID: "custom://worker-1",
 		},
 		{
 			name: "leaves an initialized node alone",
@@ -48,6 +113,9 @@ func TestNodeControllerReconcile(t *testing.T) {
 				n.Spec.ProviderID = "custom://worker-1"
 				return n
 			}(),
+			rules: map[string]config.InitializationRule{
+				"all": {ProviderIDScheme: "custom"},
+			},
 			wantWrites:     0,
 			wantProviderID: "custom://worker-1",
 		},
@@ -56,7 +124,7 @@ func TestNodeControllerReconcile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, tt.node)
-			c, err := NewNodeController(h.client, h.nodes, "custom")
+			c, err := NewInitializationController(h.client, h.nodes, &staticConfig{cfg: config.Config{Initialization: tt.rules}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -69,8 +137,8 @@ func TestNodeControllerReconcile(t *testing.T) {
 			if got.Spec.ProviderID != tt.wantProviderID {
 				t.Errorf("providerID = %q, want %q", got.Spec.ProviderID, tt.wantProviderID)
 			}
-			if hasUninitializedTaint(got) {
-				t.Errorf("uninitialized taint still present")
+			if tainted := hasUninitializedTaint(got); tainted != tt.wantTainted {
+				t.Errorf("uninitialized taint present = %v, want %v", tainted, tt.wantTainted)
 			}
 			for _, taint := range tt.node.Spec.Taints {
 				if taint.Key == UninitializedTaintKey {
@@ -88,9 +156,9 @@ func TestNodeControllerReconcile(t *testing.T) {
 	}
 }
 
-func TestNodeControllerIgnoresDeletedNode(t *testing.T) {
+func TestInitializationControllerIgnoresDeletedNode(t *testing.T) {
 	h := newHarness(t)
-	c, err := NewNodeController(h.client, h.nodes, "custom")
+	c, err := NewInitializationController(h.client, h.nodes, &staticConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,9 +167,17 @@ func TestNodeControllerIgnoresDeletedNode(t *testing.T) {
 	}
 }
 
-func TestNodeControllerProviderName(t *testing.T) {
+// initializeAll is a ConfigSource with one initialization rule matching
+// every Node and stamping providerIDs with scheme.
+func initializeAll(scheme string) *staticConfig {
+	return &staticConfig{cfg: config.Config{Initialization: map[string]config.InitializationRule{
+		"all": {ProviderIDScheme: scheme},
+	}}}
+}
+
+func TestInitializationControllerProviderIDScheme(t *testing.T) {
 	h := newHarness(t, node("worker-1", nil))
-	c, err := NewNodeController(h.client, h.nodes, "baremetal")
+	c, err := NewInitializationController(h.client, h.nodes, initializeAll("baremetal"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +189,7 @@ func TestNodeControllerProviderName(t *testing.T) {
 	}
 }
 
-func TestNodeControllerPreservesOtherFields(t *testing.T) {
+func TestInitializationControllerPreservesOtherFields(t *testing.T) {
 	n := node("worker-1", map[string]string{"zone": "edge"})
 	n.Annotations = map[string]string{"example.com/rack": "r42"}
 	n.Spec.PodCIDR = "10.244.1.0/24"
@@ -122,7 +198,7 @@ func TestNodeControllerPreservesOtherFields(t *testing.T) {
 		{Key: "example.com/dedicated", Value: "gpu", Effect: corev1.TaintEffectNoExecute},
 	}
 	h := newHarness(t, n)
-	c, err := NewNodeController(h.client, h.nodes, "custom")
+	c, err := NewInitializationController(h.client, h.nodes, initializeAll("custom"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,11 +214,11 @@ func TestNodeControllerPreservesOtherFields(t *testing.T) {
 	}
 }
 
-func TestNodeControllerDoesNotMutateCache(t *testing.T) {
+func TestInitializationControllerDoesNotMutateCache(t *testing.T) {
 	n := node("worker-1", nil)
 	n.Spec.Taints = []corev1.Taint{{Key: UninitializedTaintKey, Effect: corev1.TaintEffectNoSchedule}}
 	h := newHarness(t, n)
-	c, err := NewNodeController(h.client, h.nodes, "custom")
+	c, err := NewInitializationController(h.client, h.nodes, initializeAll("custom"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +236,7 @@ func TestNodeControllerDoesNotMutateCache(t *testing.T) {
 	}
 }
 
-func TestNodeControllerUpdateErrors(t *testing.T) {
+func TestInitializationControllerUpdateErrors(t *testing.T) {
 	uninitialized := func() *corev1.Node {
 		n := node("worker-1", nil)
 		n.Spec.Taints = []corev1.Taint{{Key: UninitializedTaintKey, Effect: corev1.TaintEffectNoSchedule}}
@@ -170,7 +246,7 @@ func TestNodeControllerUpdateErrors(t *testing.T) {
 	t.Run("conflict is swallowed", func(t *testing.T) {
 		h := newHarness(t, uninitialized())
 		h.failUpdates("", errConflict)
-		c, err := NewNodeController(h.client, h.nodes, "custom")
+		c, err := NewInitializationController(h.client, h.nodes, initializeAll("custom"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,7 +258,7 @@ func TestNodeControllerUpdateErrors(t *testing.T) {
 	t.Run("other errors are returned for a retry", func(t *testing.T) {
 		h := newHarness(t, uninitialized())
 		h.failUpdates("", errInternal)
-		c, err := NewNodeController(h.client, h.nodes, "custom")
+		c, err := NewInitializationController(h.client, h.nodes, initializeAll("custom"))
 		if err != nil {
 			t.Fatal(err)
 		}

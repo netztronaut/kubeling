@@ -40,7 +40,7 @@ func TestExamples(t *testing.T) {
 		if err != nil {
 			t.Fatalf("configmap %s: %v", Key, err)
 		}
-		if len(cfg.ExternalIPs) == 0 || len(cfg.Labels) == 0 || len(cfg.Annotations) == 0 {
+		if len(cfg.Initialization) == 0 || len(cfg.ExternalIPs) == 0 || len(cfg.Labels) == 0 || len(cfg.Annotations) == 0 {
 			t.Errorf("example should demonstrate every rule map, got %+v", cfg)
 		}
 		if len(cfg.Labels["edge"].SelectorTerms) == 0 {

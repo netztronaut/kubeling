@@ -7,6 +7,11 @@ metadata:
   namespace: kube-system
 data:
   config.yaml: |
+    initialization:
+      bare-metal:
+        nodeSelector:
+          example.com/provider: bare-metal
+        providerIDScheme: custom
     externalIPs:
       edge:
         nodeSelector:

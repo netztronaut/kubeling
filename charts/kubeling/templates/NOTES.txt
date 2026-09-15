@@ -12,8 +12,15 @@ Check that it's running and has taken leadership:
   kubectl -n {{ .Release.Namespace }} get pods -l "app.kubernetes.io/name={{ include "kubeling.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
   kubectl -n {{ .Values.leaderElection.namespace }} get lease {{ .Values.leaderElection.leaseName }}
 
-Nodes whose kubelet was started with --cloud-provider=external should have
-spec.providerID set to "{{ .Values.providerID }}://<node-name>" and no
-longer carry the node.cloudprovider.kubernetes.io/uninitialized taint:
+{{- if or .Values.config .Values.configMap }}
 
-  kubectl get nodes -o custom-columns=NAME:.metadata.name,PROVIDER_ID:.spec.providerID
+Nodes matched by an initialization rule should no longer carry the
+node.cloudprovider.kubernetes.io/uninitialized taint, and have a
+spec.providerID if the rule sets a providerIDScheme:
+
+  kubectl get nodes -o custom-columns=NAME:.metadata.name,PROVIDER_ID:.spec.providerID,TAINTS:.spec.taints[*].key
+{{- else }}
+
+No rule configuration is set (neither `config` nor `configMap`), so Kubeling
+does nothing yet — not even initialize Nodes.
+{{- end }}

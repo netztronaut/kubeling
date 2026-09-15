@@ -109,7 +109,7 @@ func (w *Watcher) load(obj any) {
 
 	w.current.Store(&cfg)
 	klog.InfoS("loaded rule configuration", "configmap", w.ref(),
-		"externalIPs", len(cfg.ExternalIPs), "labels", len(cfg.Labels), "annotations", len(cfg.Annotations))
+		"initialization", len(cfg.Initialization), "externalIPs", len(cfg.ExternalIPs), "labels", len(cfg.Labels), "annotations", len(cfg.Annotations))
 	if w.OnChange != nil {
 		w.OnChange()
 	}

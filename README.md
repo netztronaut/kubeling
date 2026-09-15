@@ -26,31 +26,19 @@ See [Rule configuration](#rule-configuration).
 
 ### Node initialization
 
-Kubeling also covers the minimal cloud-controller-manager contract for
-clusters with no cloud behind them — bare-metal, on-prem or dev clusters
-where kubelets must run with `--cloud-provider=external` (required on modern
-Kubernetes, where in-tree cloud providers are gone) but there's no cloud API
-to talk to.
+A kubelet started with `--cloud-provider=external` registers its Node with
+the taint `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` and
+waits for a cloud-controller-manager to initialize it. Nodes that no
+cloud-controller-manager takes care of — bare-metal or on-prem machines, dev
+clusters, or the non-cloud part of a mixed cluster — would stay tainted.
 
-When a kubelet starts with `--cloud-provider=external` it:
-
-1. Registers its Node with the taint `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule`.
-2. Leaves `Node.spec.providerID` empty.
-
-A cloud-controller-manager is expected to initialize the Node and remove
-that taint so normal pods can be scheduled. Kubeling:
-
-- Sets `Node.spec.providerID` to `custom://<node-name>` if it isn't already set.
-- Removes the `node.cloudprovider.kubernetes.io/uninitialized` taint.
-
-The provider ID scheme is `custom` (configurable via `--provider-id`). There
-is no instance metadata, zone/region, or load balancer support — that is the
-cloud-controller-manager's domain.
-
-Node initialization is currently always active. Next to a real
-cloud-controller-manager, Kubeling may therefore stamp a `custom://`
-providerID or remove the taint before the cloud-controller-manager has
-initialized the Node.
+For those, Kubeling can take over initialization, but only for the Nodes
+selected by `initialization` rules: it removes the taint and, if the rule
+says so, stamps a `providerID` onto Nodes that have none. Nodes matching no
+rule are never touched, so Kubeling can run next to a real
+cloud-controller-manager. There is no instance metadata, zone/region, or
+load balancer support — that is the cloud-controller-manager's domain. See
+[initialization](#initialization).
 
 ## Images and charts
 
@@ -165,25 +153,31 @@ Once the controller manager is deployed, start kubelets with:
 ```
 
 New Nodes will show the `node.cloudprovider.kubernetes.io/uninitialized`
-taint until this controller processes them, which normally happens within
-seconds of the Node object appearing.
+taint until they are initialized — by a cloud-controller-manager, or by
+Kubeling within seconds of the Node object appearing if an
+[initialization](#initialization) rule matches it.
 
 ## Rule configuration
 
-The controller can optionally read rules from a ConfigMap and apply them to
-Nodes. Point it at one with `--configmap=(namespace/)name` or the
+The controller reads rules from a ConfigMap and applies them to Nodes. Point it at one with `--configmap=(namespace/)name` or the
 `CONFIGMAP` environment variable (the flag wins if both are set); the
 namespace defaults to the controller's own namespace when omitted. The
 ConfigMap is read via the Kubernetes API (get/list/watch) — it is never
 mounted as a volume — so changes take effect within seconds, without a pod
-restart. Leave it unset to disable rule processing entirely.
+restart. Leave it unset to disable rule processing entirely; the controller
+then does nothing.
 
 The ConfigMap must have a `config.yaml` key holding a YAML document with up
-to three independent rule maps at the root — `externalIPs`, `labels`,
-`annotations` — each keyed by an arbitrary rule ID and reconciled by its
-own controller:
+to four independent rule maps at the root — `initialization`,
+`externalIPs`, `labels`, `annotations` — each keyed by an arbitrary rule ID
+and reconciled by its own controller:
 
 ```yaml
+initialization:
+  bare-metal:
+    nodeSelector:
+      example.com/provider: bare-metal
+    providerIDScheme: custom
 externalIPs:
   edge:
     nodeSelector:
@@ -210,7 +204,7 @@ annotations:
       example.com/rack: r42
 ```
 
-Every rule, in every one of the three maps, is matched the same way:
+Every rule, in every one of the four maps, is matched the same way:
 
 - `nodeSelector` — labels a Node must have for this rule to apply.
 - `selectorTerms` — a list of node selector terms, with exactly the shape
@@ -221,8 +215,8 @@ Every rule, in every one of the three maps, is matched the same way:
   `Exists`, `DoesNotExist`, `Gt`, `Lt`) and/or `matchFields` on
   `metadata.name` (operators `In`, `NotIn`, with exactly one value).
 - `providerIDPattern` — a Go regular expression matched against a Node's
-  `spec.providerID`. A Node with no `providerID` yet never matches a rule
-  that sets this.
+  `spec.providerID`. A Node with no `providerID` yet is matched against the
+  empty string, so only patterns like `^$` match it.
 
 All three are optional; an unset one imposes no constraint. When a rule sets
 several, a Node must satisfy every one of them to match it — e.g. a rule with
@@ -234,12 +228,54 @@ applied labels are never removed automatically, so such a Node keeps
 matching even after the original reason is gone.
 
 The document is decoded strictly: unknown keys (a typo, or the retired
-`policies` schema), `providerIDPattern`s that don't compile, and malformed
+`policies` schema), `providerIDPattern`s that don't compile, a
+`providerIDScheme` that isn't a URI scheme, and malformed
 `selectorTerms` (an empty term, an unknown operator, `In` without values, a
 non-integer `Gt`/`Lt` value, a `matchFields` key other than `metadata.name`)
 make the
 controller log an error and keep its previous configuration, rather than
 silently applying nothing.
+
+### initialization
+
+Every Node matched by at least one `initialization` rule is initialized the
+way a cloud-controller-manager would: the
+`node.cloudprovider.kubernetes.io/uninitialized` taint is removed. Nodes
+matching no rule are left alone, so the rules decide which Nodes Kubeling
+initializes and which it leaves to a cloud-controller-manager.
+
+A rule may also set `providerIDScheme`. If a matching Node has no
+`spec.providerID` yet, Kubeling sets it to `<providerIDScheme>://<node-name>`
+in the same update that removes the taint. An existing `providerID` is
+never changed — Kubernetes doesn't allow that — and without a
+`providerIDScheme` the `providerID` stays empty. If matching rules set
+different `providerIDScheme`s, the Node isn't initialized at all and an
+error is logged, since a `providerID` can't be corrected once set.
+
+Which rules to write depends on what tells your Nodes apart before they are
+initialized:
+
+```yaml
+initialization:
+  # Kubelets started with --provider-id=metal://... bring their providerID
+  # along, so Nodes a cloud-controller-manager handles can't match.
+  kubelet-provider-id:
+    providerIDPattern: '^metal://'
+  # Nodes without a providerID are told apart by a label the kubelet sets
+  # (--node-labels), and get a custom://<node-name> providerID.
+  bare-metal:
+    nodeSelector:
+      example.com/provider: bare-metal
+    providerIDScheme: custom
+```
+
+A rule matching Nodes without a `providerID` — no constraints at all, or a
+`providerIDPattern` like `^$` — also matches Nodes still waiting for a
+cloud-controller-manager, and would initialize them first. Only write such
+rules for clusters without a cloud-controller-manager.
+
+Unlike the other rule maps, initialization has no NodeCondition: it is a
+one-time change, visible in the taint and `providerID` themselves.
 
 ### externalIPs
 
@@ -266,14 +302,14 @@ logged; fix the conflicting rules to resolve it. Because `labels`/
 the scheduler rely on, avoid targeting reserved prefixes (`kubernetes.io/`,
 `node-role.kubernetes.io/`, etc.) unless you mean to.
 
-The three rule maps are reconciled by independent controllers that don't
+The rule maps are reconciled by independent controllers that don't
 coordinate with each other, so this conflict detection only applies
 *within* a single map (two `labels` rules, or two `annotations` rules) —
 not across maps.
 
 ### Conditions
 
-Each of the three controllers maintains its own NodeCondition, present on a
+Each of the `externalIPs`, `labels` and `annotations` controllers maintains its own NodeCondition, present on a
 Node **only while at least one rule for that domain matches it** — a Node no
 `annotations` rule ever matches carries no `kubeling.io/Annotated` condition
 at all:
@@ -306,14 +342,13 @@ a newly added or widened rule can still match previously-unmatched Nodes.
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--kubeconfig` | in-cluster config | Path to a kubeconfig; omit when running inside the cluster. |
-| `--provider-id` | `custom` | Scheme used for `providerID = <provider-id>://<node-name>`. |
 | `--leader-elect` | `true` | Enable leader election across replicas. |
 | `--leader-elect-namespace` | `kube-system` | Namespace holding the leader-election Lease. |
 | `--leader-elect-lease-name` | `kubeling` | Name of the leader-election Lease. |
 | `--resync-period` | `10m` | Node and ConfigMap informer resync period. |
 | `--workers` | `2` | Number of concurrent Node reconcile workers per controller. |
 | `--health-addr` | `:10258` | Address serving `/healthz`. |
-| `--configmap` | `""` (or `CONFIGMAP` env var) | Rule ConfigMap reference, `(namespace/)name`. Empty disables rule processing. |
+| `--configmap` | `""` (or `CONFIGMAP` env var) | Rule ConfigMap reference, `(namespace/)name`. Empty disables rule processing, including Node initialization. |
 
 ## Development
 
