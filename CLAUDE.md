@@ -41,12 +41,10 @@ make image                     # multi-arch image, pushed to ghcr.io/netztronaut
 make deploy VALUES=<file>      # helm upgrade --install in the current kube context
 ```
 
-The repository is hosted on GitHub at `github.com/netztronaut/kubeling`
-(remote `github`) and on Forgejo at `git.example.com/platform/kubeling`
-(remote `origin`). CI just runs `make check` on `runs-on: ubuntu-latest`, in
-`.github/workflows/ci.yml` and `.forgejo/workflows/ci.yml` (served by the
-forgejo-runner deployed to the example.com cluster from the
-`gitops/example` repo, `clusters/example.com/forgejo-runner/`).
+The repository is hosted on GitHub at `github.com/netztronaut/kubeling` and
+mirrored to a private Forgejo instance. CI just runs `make check` on
+`runs-on: ubuntu-latest`, in `.github/workflows/ci.yml` and, for the mirror,
+`.forgejo/workflows/ci.yml`.
 `.github/workflows/release.yml` publishes the image to
 `ghcr.io/netztronaut/kubeling` and the chart to
 `oci://ghcr.io/netztronaut/charts/kubeling` on pushes to `main` (dev chart
