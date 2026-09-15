@@ -222,13 +222,17 @@ func loadConfig(kubeconfig string) (*rest.Config, error) {
 }
 
 func serveHealth(addr string) {
+	klog.InfoS("serving health checks", "address", addr)
+	if err := http.ListenAndServe(addr, healthHandler()); err != nil {
+		klog.ErrorS(err, "health server failed")
+	}
+}
+
+func healthHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	klog.InfoS("serving health checks", "address", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		klog.ErrorS(err, "health server failed")
-	}
+	return mux
 }
