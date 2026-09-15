@@ -1,12 +1,12 @@
 APPLICATION := kubeling
 CHART_DIR ?= charts/$(APPLICATION)
 
-IMAGE_REPOSITORY ?= git.example.com/platform/$(APPLICATION)
+IMAGE_REPOSITORY ?= ghcr.io/netztronaut/$(APPLICATION)
 IMAGE_TAG ?= latest
 PLATFORMS ?= linux/amd64,linux/arm64
 
 # Optional Helm values file and namespace for `make deploy`, e.g.
-# make deploy VALUES=../gitops/kubeling/values.yaml NAMESPACE=kube-system
+# make deploy VALUES=values.yaml NAMESPACE=kube-system
 VALUES ?=
 NAMESPACE ?=
 

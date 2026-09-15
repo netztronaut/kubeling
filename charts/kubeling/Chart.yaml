@@ -4,9 +4,9 @@ description: A minimal cloud-controller-manager that lets kubelets run with --cl
 type: application
 version: 0.2.1
 appVersion: "latest"
-home: https://git.example.com/platform/kubeling
+home: https://github.com/netztronaut/kubeling
 sources:
-  - https://git.example.com/platform/kubeling
+  - https://github.com/netztronaut/kubeling
 keywords:
   - cloud-controller-manager
   - cloud-provider

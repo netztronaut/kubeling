@@ -36,14 +36,21 @@ make test                      # go test -race -cover ./...
 make lint                      # golangci-lint (pinned, installed into bin/)
 go test ./pkg/controller/ -run TestMergeExternalIPs -v   # single test
 make build                     # bin/kubeling
-make image                     # multi-arch image, pushed to git.example.com/platform/kubeling
+make image                     # multi-arch image, pushed to ghcr.io/netztronaut/kubeling
 make deploy VALUES=<file>      # helm upgrade --install in the current kube context
 ```
 
-The repository is hosted on Forgejo at `git.example.com/platform/kubeling`;
-CI is `.forgejo/workflows/ci.yml` and just runs `make check` on `runs-on:
-ubuntu-latest`, served by the forgejo-runner deployed to the example.com
-cluster from the `gitops/example` repo (`clusters/example.com/forgejo-runner/`). Lint rules live
+The repository is hosted on GitHub at `github.com/netztronaut/kubeling`
+(remote `github`) and on Forgejo at `git.example.com/platform/kubeling`
+(remote `origin`). CI just runs `make check` on `runs-on: ubuntu-latest`, in
+`.github/workflows/ci.yml` and `.forgejo/workflows/ci.yml` (served by the
+forgejo-runner deployed to the example.com cluster from the
+`gitops/example` repo, `clusters/example.com/forgejo-runner/`).
+`.github/workflows/release.yml` publishes the image to
+`ghcr.io/netztronaut/kubeling` and the chart to
+`oci://ghcr.io/netztronaut/charts/kubeling` on pushes to `main` (dev chart
+versions `<version>-main.<run>`) and `v*` tags (which must match the
+`Chart.yaml` version); README.md's "Images and charts" has the tag scheme. Lint rules live
 in `.golangci.yml` (notably: use `slices`, not `sort`). `go.mod` pins
 `toolchain go1.26.8` because the auto-selected go1.26.0 toolchain breaks
 coverage builds.

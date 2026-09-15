@@ -33,7 +33,7 @@ reject() {
 
 out="$(render)"
 expect "default: renders the Deployment" '^kind: Deployment$' "$out"
-expect "default: uses the chart image repository" 'image: "git.example.com/platform/kubeling:latest"' "$out"
+expect "default: uses the chart image repository" 'image: "ghcr.io/netztronaut/kubeling:latest"' "$out"
 reject "default: creates no ConfigMap" '^kind: ConfigMap$' "$out"
 reject "default: sets no CONFIGMAP env" 'name: CONFIGMAP' "$out"
 reject "default: sets no imagePullPolicy" 'imagePullPolicy:' "$out"

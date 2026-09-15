@@ -43,7 +43,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: kubeling
-          image: git.example.com/platform/kubeling:latest
+          image: ghcr.io/netztronaut/kubeling:latest
           args:
             - --provider-id=custom
             - --leader-elect=true

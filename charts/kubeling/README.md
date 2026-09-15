@@ -7,9 +7,13 @@ cloud-controller-manager that lets kubelets run with
 ## Installing
 
 ```sh
-helm install kubeling ./charts/kubeling \
+helm install kubeling oci://ghcr.io/netztronaut/charts/kubeling \
   --namespace kube-system
 ```
+
+Released chart versions match the image tag they deploy; `-main.<run>`
+builds of `main` (install with `--devel`) are pinned to that commit's
+`sha-<short-sha>` image.
 
 By default the chart prefers control-plane nodes (a soft node affinity on
 `node-role.kubernetes.io/control-plane`), tolerates the control-plane,
@@ -102,7 +106,7 @@ but nothing reads or writes through them while rule processing is off.
 | --- | --- | --- |
 | `replicaCount` | `1` | Number of replicas. Only one is active at a time; see `leaderElection`. |
 | `updateStrategy` | `RollingUpdate`, `maxSurge: 0`, `maxUnavailable: 1` | Deployment rollout strategy. Terminates a Pod before scheduling its replacement so rollouts don't deadlock (and don't clash on the host network port) on clusters with only as many suitable nodes as there are replicas. |
-| `image.repository` | `git.example.com/platform/kubeling` | Container image repository. |
+| `image.repository` | `ghcr.io/netztronaut/kubeling` | Container image repository. |
 | `image.tag` | `""` (chart `appVersion`) | Container image tag. |
 | `image.pullPolicy` | `""` (Kubernetes default) | Image pull policy. Unset, Kubernetes pulls `latest` tags on every start and other tags only when missing. |
 | `imagePullSecrets` | `[]` | Image pull secrets. |

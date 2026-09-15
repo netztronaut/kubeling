@@ -17,7 +17,7 @@ updateStrategy:
     maxUnavailable: 1
 
 image:
-  repository: git.example.com/platform/kubeling
+  repository: ghcr.io/netztronaut/kubeling
   # -- Image pull policy. Empty leaves it to Kubernetes, which pulls
   # "latest" tags on every start and other tags only when missing.
   pullPolicy: ""

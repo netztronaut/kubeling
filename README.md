@@ -32,14 +32,29 @@ Optionally, it can also apply `externalIPs`, labels and annotations to Nodes
 based on rules read from a ConfigMap, each matched by `nodeSelector` and/or
 `providerID` regex — see [Rule configuration](#rule-configuration).
 
-## Building
+## Images and charts
 
 The source lives at
-[git.example.com/platform/kubeling](https://git.example.com/platform/kubeling).
-Build and push the multi-arch (`linux/amd64`, `linux/arm64`) image:
+[github.com/netztronaut/kubeling](https://github.com/netztronaut/kubeling).
+The [Release workflow](.github/workflows/release.yml) publishes a
+multi-arch (`linux/amd64`, `linux/arm64`) image to
+`ghcr.io/netztronaut/kubeling` and the Helm chart to
+`oci://ghcr.io/netztronaut/charts/kubeling`:
+
+| Trigger | Image tags | Chart version |
+| --- | --- | --- |
+| Push to `main` | `latest`, `main`, `sha-<short-sha>` | `<Chart.yaml version>-main.<run>`, pinned to `sha-<short-sha>` |
+| Tag `vX.Y.Z` | `X.Y.Z`, `X.Y` | `X.Y.Z`, pinned to image `X.Y.Z` |
+| Tag `vX.Y.Z-rc.N` | `X.Y.Z-rc.N` | `X.Y.Z-rc.N`, pinned to image `X.Y.Z-rc.N` |
+
+A release tag's `X.Y.Z` must match `version` in
+[`charts/kubeling/Chart.yaml`](charts/kubeling/Chart.yaml), so bump it
+before tagging. Pull requests build both without pushing.
+
+To build and push the image yourself instead:
 
 ```sh
-make image                                  # git.example.com/platform/kubeling:latest
+make image                                  # ghcr.io/netztronaut/kubeling:latest
 make image IMAGE_REPOSITORY=registry.example.com/kubeling IMAGE_TAG=v0.2.0
 ```
 
@@ -49,12 +64,17 @@ Or build the binary locally with `make build` (writes `bin/kubeling`).
 
 ### Helm
 
-A chart is available at [`charts/kubeling`](charts/kubeling):
+The chart is published to `oci://ghcr.io/netztronaut/charts/kubeling`
+(see [Images and charts](#images-and-charts)); its source is
+[`charts/kubeling`](charts/kubeling):
 
 ```sh
-helm install kubeling ./charts/kubeling \
+helm install kubeling oci://ghcr.io/netztronaut/charts/kubeling \
   --namespace kube-system
 ```
+
+Add `--devel` to pick up a `-main.<run>` build when no release has been
+tagged yet, or install from a checkout with `./charts/kubeling`.
 
 `make deploy` wraps `helm upgrade --install` for the current kube context
 and accepts `VALUES=<file>` and `NAMESPACE=<namespace>`.
@@ -237,4 +257,5 @@ make lint     # golangci-lint, installed at a pinned version into bin/
 ```
 
 CI runs `make check` on every push to `main` and on pull requests via
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) and
 Forgejo Actions ([`.forgejo/workflows/ci.yml`](.forgejo/workflows/ci.yml)).
