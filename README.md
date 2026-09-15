@@ -68,13 +68,36 @@ The chart is published to `oci://ghcr.io/netztronaut/charts/kubeling`
 (see [Images and charts](#images-and-charts)); its source is
 [`charts/kubeling`](charts/kubeling):
 
+Install the latest release (no registry login needed — the chart and image
+are public):
+
 ```sh
 helm install kubeling oci://ghcr.io/netztronaut/charts/kubeling \
   --namespace kube-system
 ```
 
-Add `--devel` to pick up a `-main.<run>` build when no release has been
-tagged yet, or install from a checkout with `./charts/kubeling`.
+Pin a release with `--version`, which also pins the image, since every
+released chart deploys the image tag matching its own version:
+
+```sh
+helm install kubeling oci://ghcr.io/netztronaut/charts/kubeling \
+  --namespace kube-system \
+  --version 0.2.1
+```
+
+Upgrade an existing installation to the latest release (or to a pinned one
+with `--version`), keeping the values you set before while picking up the
+new chart's defaults:
+
+```sh
+helm upgrade kubeling oci://ghcr.io/netztronaut/charts/kubeling \
+  --namespace kube-system \
+  --reset-then-reuse-values
+```
+
+To try unreleased changes, add `--devel` to pick up the newest
+`-main.<run>` build of `main`, or install from a checkout with
+`./charts/kubeling`.
 
 `make deploy` wraps `helm upgrade --install` for the current kube context
 and accepts `VALUES=<file>` and `NAMESPACE=<namespace>`.
