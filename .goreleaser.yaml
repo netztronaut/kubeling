@@ -28,6 +28,9 @@ archives:
 
 checksum:
   name_template: checksums.txt
+  extra_files:
+    # The packaged chart attached to the release below.
+    - glob: '{{ envOrDefault "CHART_PACKAGE_DIR" ".release/chart" }}/*.tgz'
 
 changelog:
   use: github

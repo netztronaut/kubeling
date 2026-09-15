@@ -67,8 +67,8 @@ auto-selected go1.26.0 toolchain breaks coverage builds.
    `oci://ghcr.io/netztronaut/charts/kubeling`; on tags it also uploads the
    `.tgz` as the `chart` artifact.
 4. **`release`** runs GoReleaser (`.goreleaser.yaml`): on tags it creates
-   the GitHub release with linux/darwin × amd64/arm64 archives,
-   `checksums.txt`, the changelog and the chart `.tgz` as an extra file
+   the GitHub release with linux/darwin × amd64/arm64 archives, the chart
+   `.tgz` as an extra file, `checksums.txt` covering both, and the changelog
    (`-*` tags become prereleases); everywhere else it builds a `--snapshot`.
 
 To cut a release: bump `version` in `Chart.yaml` and the pinned
