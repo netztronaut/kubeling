@@ -4,26 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A minimal out-of-tree [cloud-controller-manager](https://kubernetes.io/docs/concepts/architecture/cloud-controller/)
-for clusters with no real cloud backing them. It exists so kubelets can run
-with `--cloud-provider=external` without a real cloud API to talk to. It does
-three things:
+A companion to the out-of-tree [cloud-controller-manager](https://kubernetes.io/docs/concepts/architecture/cloud-controller/)
+that manages the parts of a Node beyond a cloud-controller-manager's
+responsibility. It does three things:
 
-1. Stamps `Node.spec.providerID = <provider-id>://<node-name>` (default
-   scheme `custom`) and removes the `node.cloudprovider.kubernetes.io/uninitialized`
-   taint the kubelet sets in external mode.
-2. Optionally applies `externalIPs`, labels, and annotations to Nodes,
+1. Applies `externalIPs`, labels, and annotations to Nodes,
    each from its own independently-reconciled rule map read live from a
    ConfigMap (never mounted as a volume — read via the Kubernetes API so
    changes apply within seconds, no pod restart). Every rule, in every map,
    is matched by any combination (ANDed) of `nodeSelector`, node-affinity-style
    `selectorTerms`, and a regex against `providerID`.
-3. Each of those three domains maintains its own `kubeling.io/` NodeCondition
+2. Each of those three domains maintains its own `kubeling.io/` NodeCondition
    (`Labeled`, `Annotated`, `ExternalIPsApplied`) — present on a Node only
    while at least one rule for that domain currently matches it, tracking
    live applicability (`Pending`/`Applied`) separately from the
    labels/annotations/addresses it already wrote, which are never removed
    automatically.
+3. For clusters with no real cloud backing them, covers the minimal
+   cloud-controller-manager contract so kubelets can run with
+   `--cloud-provider=external`: stamps
+   `Node.spec.providerID = <provider-id>://<node-name>` (default scheme
+   `custom`) and removes the `node.cloudprovider.kubernetes.io/uninitialized`
+   taint the kubelet sets in external mode. This is always active.
 
 There is intentionally no instance metadata, zone/region, or load balancer
 support — see README.md for the full behavioral spec (rule semantics,

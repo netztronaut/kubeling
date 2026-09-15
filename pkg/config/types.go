@@ -1,4 +1,4 @@
-// Package config loads the cloud-controller-manager's rule configuration
+// Package config loads Kubeling's Node rule configuration
 // from a ConfigMap, read via the Kubernetes API rather than a mounted
 // volume.
 package config

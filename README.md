@@ -1,12 +1,36 @@
 # Kubeling
 
-A minimal [cloud-controller-manager](https://kubernetes.io/docs/concepts/architecture/cloud-controller/)
-for clusters that have no real cloud backing them. It exists so kubelets can
-be run with `--cloud-provider=external` (required on modern Kubernetes,
-where in-tree cloud providers are gone) without needing a real cloud API to
-talk to.
+A companion to the [cloud-controller-manager](https://kubernetes.io/docs/concepts/architecture/cloud-controller/)
+that manages the parts of a Node outside a cloud-controller-manager's
+responsibility. A cloud-controller-manager initializes Nodes from what the
+cloud knows about them; Kubeling applies what the cluster operator knows:
+`externalIPs`, labels and annotations, declared as rules in a ConfigMap and
+kept applied as Nodes come and go.
 
 ## What it does
+
+### Node rules
+
+Kubeling reads rules from a ConfigMap (via the Kubernetes API, so edits
+apply within seconds without a restart) and applies them to every Node they
+match:
+
+- **`externalIPs`** are added to `status.addresses`.
+- **Labels** are set on the Node.
+- **Annotations** are set on the Node.
+
+Each rule is matched by any combination of `nodeSelector`,
+node-affinity-style `selectorTerms` and a `providerID` regex, and each
+domain reports its progress through its own `kubeling.io/` NodeCondition.
+See [Rule configuration](#rule-configuration).
+
+### Node initialization
+
+Kubeling also covers the minimal cloud-controller-manager contract for
+clusters with no cloud behind them — bare-metal, on-prem or dev clusters
+where kubelets must run with `--cloud-provider=external` (required on modern
+Kubernetes, where in-tree cloud providers are gone) but there's no cloud API
+to talk to.
 
 When a kubelet starts with `--cloud-provider=external` it:
 
@@ -14,23 +38,19 @@ When a kubelet starts with `--cloud-provider=external` it:
 2. Leaves `Node.spec.providerID` empty.
 
 A cloud-controller-manager is expected to initialize the Node and remove
-that taint so normal pods can be scheduled. This controller does exactly
-that and nothing else:
+that taint so normal pods can be scheduled. Kubeling:
 
-- Watches Nodes.
 - Sets `Node.spec.providerID` to `custom://<node-name>` if it isn't already set.
 - Removes the `node.cloudprovider.kubernetes.io/uninitialized` taint.
 
 The provider ID scheme is `custom` (configurable via `--provider-id`). There
-is no real instance metadata, zone/region, or load balancer support — this
-is intentionally the smallest thing that satisfies the external
-cloud-provider contract. It's meant for bare-metal, on-prem, or dev clusters
-where `--cloud-provider=external` is required by the kubelet/control plane
-but there's no cloud to integrate with.
+is no instance metadata, zone/region, or load balancer support — that is the
+cloud-controller-manager's domain.
 
-Optionally, it can also apply `externalIPs`, labels and annotations to Nodes
-based on rules read from a ConfigMap, each matched by `nodeSelector`,
-node-affinity-style `selectorTerms` and/or a `providerID` regex — see [Rule configuration](#rule-configuration).
+Node initialization is currently always active. Next to a real
+cloud-controller-manager, Kubeling may therefore stamp a `custom://`
+providerID or remove the taint before the cloud-controller-manager has
+initialized the Node.
 
 ## Images and charts
 

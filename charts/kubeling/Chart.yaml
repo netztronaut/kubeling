@@ -1,6 +1,6 @@
 apiVersion: v2
 name: kubeling
-description: A minimal cloud-controller-manager that lets kubelets run with --cloud-provider=external without a real cloud backing the cluster.
+description: A cloud-controller-manager companion that applies externalIPs, labels and annotations to Nodes from rules in a ConfigMap, and initializes Nodes in clusters without a cloud.
 type: application
 version: 0.2.3
 appVersion: "latest"

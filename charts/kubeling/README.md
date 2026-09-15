@@ -1,8 +1,11 @@
 # Kubeling
 
-A Helm chart for [Kubeling](../../README.md), a minimal
-cloud-controller-manager that lets kubelets run with
-`--cloud-provider=external` without a real cloud backing the cluster.
+A Helm chart for [Kubeling](../../README.md), a cloud-controller-manager
+companion that manages the parts of a Node outside a
+cloud-controller-manager's responsibility: it applies `externalIPs`, labels
+and annotations from rules in a ConfigMap, and initializes Nodes for
+kubelets running with `--cloud-provider=external` in clusters without a
+cloud.
 
 ## Installing
 
