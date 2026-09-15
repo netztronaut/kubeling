@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.1.4
+
+      # golangci-lint is built from source into bin/ by the Makefile; cache
+      # it by the Makefile, which pins its version.
+      - uses: actions/cache@v6
+        with:
+          path: bin/golangci-lint-*
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: Check
+        run: make check
