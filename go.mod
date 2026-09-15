@@ -1,4 +1,4 @@
-module github.com/steigr/kubeling
+module github.com/netztronaut/kubeling
 
 go 1.26.0
 

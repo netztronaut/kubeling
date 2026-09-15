@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
-	"github.com/steigr/kubeling/pkg/config"
+	"github.com/netztronaut/kubeling/pkg/config"
 )
 
 // metadataDomain bundles what differs between reconciling Node labels and

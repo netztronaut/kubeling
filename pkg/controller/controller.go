@@ -19,7 +19,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
-	"github.com/steigr/kubeling/pkg/config"
+	"github.com/netztronaut/kubeling/pkg/config"
 )
 
 // ConfigSource provides the current rule configuration. *config.Watcher

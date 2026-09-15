@@ -10,7 +10,7 @@ import (
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/steigr/kubeling/pkg/config"
+	"github.com/netztronaut/kubeling/pkg/config"
 )
 
 // staticConfig is a ConfigSource whose configuration tests set directly.

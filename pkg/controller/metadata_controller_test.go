@@ -6,7 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/steigr/kubeling/pkg/config"
+	"github.com/netztronaut/kubeling/pkg/config"
 )
 
 func TestApplyOverwrite(t *testing.T) {
