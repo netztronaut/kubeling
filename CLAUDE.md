@@ -49,7 +49,10 @@ mirrored to a private Forgejo instance. CI just runs `make check` on
 `ghcr.io/netztronaut/kubeling` and the chart to
 `oci://ghcr.io/netztronaut/charts/kubeling` on pushes to `main` (dev chart
 versions `<version>-main.<run>`) and `v*` tags (which must match the
-`Chart.yaml` version); README.md's "Images and charts" has the tag scheme. Lint rules live
+`Chart.yaml` version); for tags, a final job runs GoReleaser
+(`.goreleaser.yaml`) to create the GitHub release with binaries and the
+packaged chart, and it builds a `--snapshot` on every other event.
+README.md's "Images and charts" has the tag scheme. Lint rules live
 in `.golangci.yml` (notably: use `slices`, not `sort`). `go.mod` pins
 `toolchain go1.26.8` because the auto-selected go1.26.0 toolchain breaks
 coverage builds.

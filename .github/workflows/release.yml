@@ -8,7 +8,9 @@ name: Release
 #   tag vX.Y.Z[-*]  image :X.Y.Z[-*] (and :X.Y for final releases)
 #                   chart X.Y.Z[-*], appVersion X.Y.Z[-*]; the tag's X.Y.Z
 #                   must equal the version in Chart.yaml
-#   pull request    both are built, nothing is pushed
+#                   GitHub release (GoReleaser): binaries, checksums,
+#                   changelog and the packaged chart; -* tags are prereleases
+#   pull request    everything is built, nothing is pushed or released
 
 on:
   push:
@@ -28,6 +30,7 @@ env:
   REGISTRY: ghcr.io
   CHART_DIR: charts/kubeling
   HELM_VERSION: v4.1.4
+  GORELEASER_VERSION: v2.18.1
   PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
@@ -140,6 +143,50 @@ jobs:
         if: needs.version.outputs.push == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHART_PACKAGE_DIR: ${{ runner.temp }}/chart
+          OWNER: ${{ needs.version.outputs.owner }}
         run: |
           helm registry login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin <<<"$GITHUB_TOKEN"
           helm push "dist/kubeling-$CHART_VERSION.tgz" "$CHART_REPOSITORY"
+
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: chart
+          path: dist/kubeling-${{ env.CHART_VERSION }}.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runs last so a tag only becomes a GitHub release once its image and
+  # chart are published. Outside tags it builds a snapshot, which validates
+  # .goreleaser.yaml without publishing anything.
+  release:
+    needs: [version, image, chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # GoReleaser needs the tags and history for the changelog.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/download-artifact@v8
+        with:
+          name: chart
+          # Outside the checkout, so GoReleaser doesn't see a dirty tree.
+          path: ${{ runner.temp }}/chart
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean ${{ !startsWith(github.ref, 'refs/tags/v') && '--snapshot' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHART_PACKAGE_DIR: ${{ runner.temp }}/chart
+          OWNER: ${{ needs.version.outputs.owner }}

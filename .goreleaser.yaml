@@ -1,0 +1,48 @@
+# GoReleaser builds the kubeling binaries and publishes the GitHub release
+# for v* tags; see .github/workflows/release.yml. The container image and
+# the Helm chart are built by that workflow's other jobs, and the packaged
+# chart is attached to the release as an extra file.
+version: 2
+
+project_name: kubeling
+
+builds:
+  - main: ./cmd/kubeling
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+
+release:
+  prerelease: auto
+  extra_files:
+    # Set by the workflow to the directory holding the packaged chart.
+    - glob: '{{ envOrDefault "CHART_PACKAGE_DIR" "dist/chart" }}/*.tgz'
+  footer: |
+    ## Container image and Helm chart
+
+    ```sh
+    docker pull ghcr.io/{{ envOrDefault "OWNER" "netztronaut" }}/kubeling:{{ .Version }}
+    helm install kubeling oci://ghcr.io/{{ envOrDefault "OWNER" "netztronaut" }}/charts/kubeling \
+      --version {{ .Version }} --namespace kube-system
+    ```
