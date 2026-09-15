@@ -143,8 +143,6 @@ jobs:
         if: needs.version.outputs.push == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CHART_PACKAGE_DIR: ${{ runner.temp }}/chart
-          OWNER: ${{ needs.version.outputs.owner }}
         run: |
           helm registry login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin <<<"$GITHUB_TOKEN"
           helm push "dist/kubeling-$CHART_VERSION.tgz" "$CHART_REPOSITORY"
@@ -179,8 +177,10 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: chart
-          # Outside the checkout, so GoReleaser doesn't see a dirty tree.
-          path: ${{ runner.temp }}/chart
+          # Relative to the checkout: GoReleaser's extra_files globs don't
+          # support absolute paths. /.release/ is git-ignored, so the tree
+          # stays clean, and unlike dist/ it survives --clean.
+          path: .release/chart
 
       - uses: goreleaser/goreleaser-action@v7
         with:
@@ -188,5 +188,5 @@ jobs:
           args: release --clean ${{ !startsWith(github.ref, 'refs/tags/v') && '--snapshot' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CHART_PACKAGE_DIR: ${{ runner.temp }}/chart
+          CHART_PACKAGE_DIR: .release/chart
           OWNER: ${{ needs.version.outputs.owner }}

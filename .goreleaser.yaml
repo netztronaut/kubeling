@@ -36,8 +36,9 @@ changelog:
 release:
   prerelease: auto
   extra_files:
-    # Set by the workflow to the directory holding the packaged chart.
-    - glob: '{{ envOrDefault "CHART_PACKAGE_DIR" "dist/chart" }}/*.tgz'
+    # Set by the workflow to the directory holding the packaged chart; must
+    # be relative, since extra_files globs don't support absolute paths.
+    - glob: '{{ envOrDefault "CHART_PACKAGE_DIR" ".release/chart" }}/*.tgz'
   footer: |
     ## Container image and Helm chart
 
