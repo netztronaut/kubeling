@@ -49,7 +49,12 @@ multi-arch (`linux/amd64`, `linux/arm64`) image to
 
 A release tag's `X.Y.Z` must match `version` in
 [`charts/kubeling/Chart.yaml`](charts/kubeling/Chart.yaml), so bump it
-before tagging. Pull requests build both without pushing.
+before tagging. Once the image and chart are published, a tag also becomes a
+[GitHub release](https://github.com/netztronaut/kubeling/releases), created
+by [GoReleaser](.goreleaser.yaml) with `linux` and `darwin` binaries
+(`amd64`, `arm64`), checksums, a changelog and the packaged chart; `-rc.N`
+tags are marked as prereleases. Pull requests build everything, including a
+GoReleaser snapshot, without pushing or releasing.
 
 To build and push the image yourself instead:
 
