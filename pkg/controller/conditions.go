@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,6 +38,23 @@ func appliedCondition(t corev1.NodeConditionType, matched []string) corev1.NodeC
 		Status:  corev1.ConditionTrue,
 		Reason:  "Applied",
 		Message: fmt.Sprintf("Applied from matching rule(s): %s.", strings.Join(matched, ", ")),
+	}
+}
+
+// driftedCondition reports that matched rules' values were changed by
+// someone else shortly after being applied, and are restored once cooldown
+// has passed. It only names keys or addresses, never values.
+func driftedCondition(t corev1.NodeConditionType, matched []string, d drift, changedBy []string, cooldown time.Duration) corev1.NodeCondition {
+	by := ""
+	if len(changedBy) > 0 {
+		by = " by " + strings.Join(changedBy, ", ")
+	}
+	return corev1.NodeCondition{
+		Type:   t,
+		Status: corev1.ConditionFalse,
+		Reason: "Drifted",
+		Message: fmt.Sprintf("Values of matching rule(s) %s were changed%s shortly after being applied (%s); restoring them after a %s cooldown.",
+			strings.Join(matched, ", "), by, d, cooldown),
 	}
 }
 
@@ -85,18 +103,24 @@ func removeCondition(node *corev1.Node, t corev1.NodeConditionType) {
 }
 
 func hasCondition(node *corev1.Node, t corev1.NodeConditionType) bool {
-	for _, c := range node.Status.Conditions {
-		if c.Type == t {
-			return true
+	return findCondition(node, t) != nil
+}
+
+// findCondition returns node's condition of type t, or nil.
+func findCondition(node *corev1.Node, t corev1.NodeConditionType) *corev1.NodeCondition {
+	for i := range node.Status.Conditions {
+		if node.Status.Conditions[i].Type == t {
+			return &node.Status.Conditions[i]
 		}
 	}
-	return false
+	return nil
 }
 
 // ensureCondition writes desired onto node's status unless it is already
-// up to date. Conflicts are swallowed: the informer will observe the newer
-// Node and requeue it.
-func ensureCondition(ctx context.Context, client kubernetes.Interface, node *corev1.Node, desired corev1.NodeCondition) error {
+// up to date, logging details (key/value pairs, e.g. why the condition
+// changed) along with it. Conflicts are swallowed: the informer will
+// observe the newer Node and requeue it.
+func ensureCondition(ctx context.Context, client kubernetes.Interface, node *corev1.Node, desired corev1.NodeCondition, details ...any) error {
 	if conditionUpToDate(node, desired) {
 		return nil
 	}
@@ -108,7 +132,7 @@ func ensureCondition(ctx context.Context, client kubernetes.Interface, node *cor
 		}
 		return fmt.Errorf("updating node %q condition %s: %w", node.Name, desired.Type, err)
 	}
-	klog.InfoS("updated node condition", "node", node.Name, "type", desired.Type, "status", desired.Status, "reason", desired.Reason)
+	klog.InfoS("updated node condition", append([]any{"node", node.Name, "type", desired.Type, "status", desired.Status, "reason", desired.Reason, "message", desired.Message}, details...)...)
 	return nil
 }
 

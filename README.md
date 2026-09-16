@@ -326,6 +326,31 @@ While a rule matches, the condition reflects live progress:
   haven't been fully applied to the Node yet.
 - `Status: "True", Reason: "Applied"` — a rule matches and its values are
   present on the Node.
+- `Status: "False", Reason: "Drifted"` — the values were applied, but
+  someone else changed or removed them again shortly afterwards; they are
+  restored after a cooldown. The message names the affected keys (or
+  addresses) and, when the Node's managed fields reveal it, who changed them.
+
+The condition only turns `False` while the values really aren't applied.
+When another client changes applied values, Kubeling restores them:
+
+- If the values held for longer than 128 seconds, it restores them right
+  away and the condition stays `True`.
+- If they change again sooner, that counts as a flap. The condition becomes
+  `Drifted` and Kubeling waits before restoring them: 0.5 seconds after the
+  first flap, doubling with every further flap up to 64 seconds. Values that
+  hold for longer than 128 seconds again reset the cooldown.
+
+This keeps Kubeling from updating a Node in a tight loop against another
+controller that disagrees with it (e.g. a policy engine rewriting the same
+labels). Such a fight never settles on its own; remove the overlap on either
+side. Editing the rules themselves is no flap: new values go through
+`Pending` again.
+
+Every condition change is logged with a `verdict` explaining it, along with
+the keys that are `missing` or `changed` and the other field managers
+(`changedBy`) that recently wrote the Node's labels, annotations or
+addresses. Label and annotation values are never logged.
 
 If a Node stops matching any rule for a domain (the rule is edited, removed,
 the whole map or ConfigMap is removed, or the Node's labels/providerID

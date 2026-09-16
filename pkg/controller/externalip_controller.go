@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -45,13 +46,15 @@ func NewExternalIPController(client kubernetes.Interface, nodes corev1informers.
 }
 
 // reconcile applies at most one change per call: clearing a stale
-// condition, setting the Pending condition, writing the addresses
-// themselves, or setting the Applied condition. Each write bumps the
-// Node's resourceVersion, which the informer observes and re-enqueues, so
-// the next step follows on a fresh object.
+// condition, setting the Pending (or Drifted) condition, writing the
+// addresses themselves, or setting the Applied condition. Each write bumps
+// the Node's resourceVersion, which the informer observes and re-enqueues,
+// so the next step follows on a fresh object. See beforeApply for how
+// addresses changed by someone else are restored.
 func (c *ExternalIPController) reconcile(ctx context.Context, key string) error {
 	node, err := c.lister.Get(key)
 	if apierrors.IsNotFound(err) {
+		c.flaps.forget(key)
 		return nil
 	}
 	if err != nil {
@@ -63,6 +66,7 @@ func (c *ExternalIPController) reconcile(ctx context.Context, key string) error 
 	rules := c.config.Current().ExternalIPs
 	matched := matchingIDs(node, rules, func(r config.ExternalIPRule) config.Match { return r.Match })
 	if len(matched) == 0 {
+		c.flaps.forget(key)
 		return ensureConditionAbsent(ctx, c.client, node, ExternalIPsAppliedConditionType)
 	}
 
@@ -73,11 +77,17 @@ func (c *ExternalIPController) reconcile(ctx context.Context, key string) error 
 	newAddresses, changed := mergeExternalIPs(node.Status.Addresses, externalIPs)
 
 	if !changed {
-		return ensureCondition(ctx, c.client, node, appliedCondition(ExternalIPsAppliedConditionType, matched))
+		return ensureCondition(ctx, c.client, node, appliedCondition(ExternalIPsAppliedConditionType, matched),
+			"verdict", "addresses of matching rules are applied")
 	}
 
-	if pending := pendingCondition(ExternalIPsAppliedConditionType, matched); !conditionUpToDate(node, pending) {
-		return ensureCondition(ctx, c.client, node, pending)
+	writers := func(since time.Time) []string {
+		return recentWriters(node, "status", since, "f:status", "f:addresses")
+	}
+	desired := externalIPFingerprint(externalIPs)
+	apply, err := c.beforeApply(ctx, c.client, node, ExternalIPsAppliedConditionType, matched, desired, externalIPDrift(node.Status.Addresses, externalIPs), writers)
+	if !apply {
+		return err
 	}
 
 	updated := node.DeepCopy()
@@ -88,8 +98,19 @@ func (c *ExternalIPController) reconcile(ctx context.Context, key string) error 
 		}
 		return fmt.Errorf("updating node %q externalIPs: %w", node.Name, err)
 	}
+	c.flaps.applied(node.Name, desired)
 	klog.InfoS("applied node externalIPs", "node", node.Name, "rules", matched, "externalIPs", externalIPs)
 	return nil
+}
+
+// externalIPFingerprint identifies a set of rule-supplied IPs, independent
+// of order and duplicates.
+func externalIPFingerprint(externalIPs []string) string {
+	set := make(map[string]bool, len(externalIPs))
+	for _, ip := range externalIPs {
+		set[ip] = true
+	}
+	return fingerprint(set)
 }
 
 // mergeExternalIPs computes the ExternalIP addresses a Node should have:

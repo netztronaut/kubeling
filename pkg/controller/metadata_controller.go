@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,6 +29,8 @@ type metadataDomain[T any] struct {
 	values        func(T) map[string]string
 	get           func(*corev1.Node) map[string]string
 	set           func(*corev1.Node, map[string]string)
+	// field is the managed fields path of the domain's values.
+	field string
 }
 
 // MetadataController reconciles either Node labels or Node annotations
@@ -59,6 +62,7 @@ func NewLabelController(client kubernetes.Interface, nodes corev1informers.NodeI
 		values:        func(r config.LabelRule) map[string]string { return r.Labels },
 		get:           func(n *corev1.Node) map[string]string { return n.Labels },
 		set:           func(n *corev1.Node, v map[string]string) { n.Labels = v },
+		field:         "f:labels",
 	})
 }
 
@@ -73,6 +77,7 @@ func NewAnnotationController(client kubernetes.Interface, nodes corev1informers.
 		values:        func(r config.AnnotationRule) map[string]string { return r.Annotations },
 		get:           func(n *corev1.Node) map[string]string { return n.Annotations },
 		set:           func(n *corev1.Node, v map[string]string) { n.Annotations = v },
+		field:         "f:annotations",
 	})
 }
 
@@ -87,13 +92,15 @@ func newMetadataController[T any](client kubernetes.Interface, nodes corev1infor
 }
 
 // reconcile applies at most one change per call: clearing a stale
-// condition, setting the Pending condition, writing the metadata itself,
-// or setting the Applied condition. Each write bumps the Node's
-// resourceVersion, which the informer observes and re-enqueues, so the
-// next step follows on a fresh object.
+// condition, setting the Pending (or Drifted) condition, writing the
+// metadata itself, or setting the Applied condition. Each write bumps the
+// Node's resourceVersion, which the informer observes and re-enqueues, so
+// the next step follows on a fresh object. See beforeApply for how values
+// changed by someone else are restored.
 func (c *MetadataController[T]) reconcile(ctx context.Context, key string) error {
 	node, err := c.lister.Get(key)
 	if apierrors.IsNotFound(err) {
+		c.flaps.forget(key)
 		return nil
 	}
 	if err != nil {
@@ -105,6 +112,7 @@ func (c *MetadataController[T]) reconcile(ctx context.Context, key string) error
 	rules := c.domain.rules(c.config.Current())
 	matched := matchingIDs(node, rules, c.domain.match)
 	if len(matched) == 0 {
+		c.flaps.forget(key)
 		return ensureConditionAbsent(ctx, c.client, node, c.domain.conditionType)
 	}
 
@@ -112,11 +120,16 @@ func (c *MetadataController[T]) reconcile(ctx context.Context, key string) error
 	newValues, changed := applyOverwrite(c.domain.get(node), desired)
 
 	if !changed {
-		return ensureCondition(ctx, c.client, node, appliedCondition(c.domain.conditionType, matched))
+		return ensureCondition(ctx, c.client, node, appliedCondition(c.domain.conditionType, matched),
+			"verdict", "values of matching rules are applied")
 	}
 
-	if pending := pendingCondition(c.domain.conditionType, matched); !conditionUpToDate(node, pending) {
-		return ensureCondition(ctx, c.client, node, pending)
+	writers := func(since time.Time) []string {
+		return recentWriters(node, "", since, "f:metadata", c.domain.field)
+	}
+	apply, err := c.beforeApply(ctx, c.client, node, c.domain.conditionType, matched, fingerprint(desired), metadataDrift(c.domain.get(node), desired), writers)
+	if !apply {
+		return err
 	}
 
 	updated := node.DeepCopy()
@@ -127,6 +140,7 @@ func (c *MetadataController[T]) reconcile(ctx context.Context, key string) error
 		}
 		return fmt.Errorf("updating node %q %s: %w", node.Name, c.domain.kind, err)
 	}
+	c.flaps.applied(node.Name, fingerprint(desired))
 	klog.InfoS("applied node metadata", "domain", c.domain.kind, "node", node.Name, "rules", matched)
 	return nil
 }

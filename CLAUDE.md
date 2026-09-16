@@ -117,7 +117,8 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
 
 - **`pkg/controller/controller.go`** — `nodeQueue`, the workqueue plumbing
   every controller embeds (event handler registration, `Run`, `EnqueueAll`,
-  rate-limited retries around a `reconcile` func), and `ConfigSource`, the
+  rate-limited retries around a `reconcile` func, and a per-Node
+  `flapDetector`), and `ConfigSource`, the
   one-method interface (`Current() config.Config`) rule controllers read
   configuration through. `*config.Watcher` implements it; tests use a
   static implementation.
@@ -156,7 +157,8 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
   stale condition, set `Pending`, write the metadata, or set `Applied` —
   relying on the informer's `UpdateFunc` to re-enqueue the Node after each
   write so the next step runs against a fresh object (up to 3 passes from
-  cold: Pending → metadata write → Applied). It always evaluates the Node,
+  cold: Pending → metadata write → Applied; see `drift.go` for values
+  changed afterwards). It always evaluates the Node,
   even with an empty rule map, so a condition is cleared once no rule
   matches anymore. `resolveValues` merges a domain's values across matching
   rules per key; a same-key conflict is logged and the key is left out
@@ -180,10 +182,25 @@ reconcile shape: enqueue Node name → worker → `reconcile(ctx, nodeName)`.
   `k8s.io/component-helpers/.../nodeaffinity`; compiled patterns are cached); `matchingIDs[T]` returns the sorted rule IDs matching a Node
   from any of the four rule maps.
 
+- **`pkg/controller/drift.go`** / **`flaps.go`** — what the `labels`,
+  `annotations` and `externalIPs` controllers do once a matched Node's
+  values differ from the desired ones (`nodeQueue.beforeApply`): a Node
+  without the condition, or whose rules changed since the last apply
+  (`fingerprint`), gets `Pending`; one whose condition is already `False`
+  gets its values written. A Node whose condition is `True` had its values
+  changed by someone else: restored right away (condition stays `True`)
+  unless that happened within `flapWindow` of the last apply, which is a
+  flap: condition `Drifted` and an `AddAfter` requeue after an exponential
+  per-Node cooldown (0.5s doubling to 64s, reset by values holding longer
+  than `flapWindow`). `drift` names missing/changed keys, never values;
+  `recentWriters` reads other field managers from `managedFields`. Every
+  condition write is logged with a `verdict`.
+
 - **`pkg/controller/conditions.go`** — the three `kubeling.io/...`
   condition types, `pendingCondition`/`appliedCondition` builders,
   `conditionUpToDate`/`setCondition` (preserves `LastTransitionTime` when
-  status hasn't changed), `removeCondition`/`hasCondition`, and
+  status hasn't changed), `removeCondition`/`hasCondition`/`findCondition`,
+  `driftedCondition`, and
   `ensureCondition`/`ensureConditionAbsent`, which perform the status write
   (swallowing conflicts) for both rule controllers.
 

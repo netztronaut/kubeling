@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -464,26 +465,6 @@ func TestExternalIPControllerScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("removed addresses are restored", func(t *testing.T) {
-		h := newHarness(t, edge())
-		c := newController(t, h, edgeRules("203.0.113.1"))
-		_, got := h.converge(c.reconcile, "edge-1")
-
-		got.Status.Addresses = nil
-		if _, err := h.client.CoreV1().Nodes().UpdateStatus(context.Background(), got, metav1.UpdateOptions{}); err != nil {
-			t.Fatal(err)
-		}
-		h.sync("edge-1")
-		writes, got := h.converge(c.reconcile, "edge-1")
-
-		if writes != 3 {
-			t.Errorf("writes = %d, want 3", writes)
-		}
-		if want := []corev1.NodeAddress{ext("203.0.113.1")}; !reflect.DeepEqual(got.Status.Addresses, want) {
-			t.Errorf("addresses = %+v, want %+v", got.Status.Addresses, want)
-		}
-	})
-
 	t.Run("an already Pending node goes straight to writing addresses", func(t *testing.T) {
 		n := edge()
 		n.Status.Conditions = []corev1.NodeCondition{pendingCondition(ExternalIPsAppliedConditionType, []string{"edge"})}
@@ -542,4 +523,84 @@ func TestExternalIPControllerScenarios(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExternalIPControllerDrift covers addresses someone else removes after
+// they were applied.
+func TestExternalIPControllerDrift(t *testing.T) {
+	edge := node("edge-1", map[string]string{"zone": "edge"})
+	ext := corev1.NodeAddress{Type: corev1.NodeExternalIP, Address: "203.0.113.1"}
+	setup := func(t *testing.T) (*harness, *ExternalIPController) {
+		t.Helper()
+		h := newHarness(t, edge.DeepCopy())
+		c, err := NewExternalIPController(h.client, h.nodes, &staticConfig{config.Config{ExternalIPs: map[string]config.ExternalIPRule{"edge": {
+			Match:       config.Match{NodeSelector: map[string]string{"zone": "edge"}},
+			ExternalIPs: []string{ext.Address},
+		}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h, c
+	}
+
+	removeAddresses := func(t *testing.T, h *harness, n *corev1.Node) {
+		t.Helper()
+		n.Status.Addresses = nil
+		if _, err := h.client.CoreV1().Nodes().UpdateStatus(context.Background(), n, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		h.sync("edge-1")
+	}
+
+	t.Run("addresses removed after holding are restored while staying Applied", func(t *testing.T) {
+		h, c := setup(t)
+		_, got := h.converge(c.reconcile, "edge-1")
+
+		removeAddresses(t, h, got)
+		after(c.nodeQueue, flapWindow+time.Second)
+		writes, got := h.converge(c.reconcile, "edge-1")
+
+		// Addresses only.
+		if writes != 1 {
+			t.Errorf("writes = %d, want 1", writes)
+		}
+		if want := []corev1.NodeAddress{ext}; !reflect.DeepEqual(got.Status.Addresses, want) {
+			t.Errorf("addresses = %+v, want %+v", got.Status.Addresses, want)
+		}
+		if cond := condition(got, ExternalIPsAppliedConditionType); cond == nil || cond.Reason != "Applied" {
+			t.Errorf("condition = %+v, want Applied", cond)
+		}
+	})
+
+	t.Run("addresses removed right after being applied are restored after a cooldown", func(t *testing.T) {
+		h, c := setup(t)
+		_, got := h.converge(c.reconcile, "edge-1")
+
+		removeAddresses(t, h, got)
+		writes, got := h.converge(c.reconcile, "edge-1")
+
+		// Drifted condition, then nothing until the cooldown has passed.
+		if writes != 1 || len(got.Status.Addresses) != 0 {
+			t.Errorf("writes = %d, addresses = %+v; want 1 write and no addresses yet", writes, got.Status.Addresses)
+		}
+		cond := condition(got, ExternalIPsAppliedConditionType)
+		if cond == nil || cond.Status != corev1.ConditionFalse || cond.Reason != "Drifted" ||
+			!strings.HasSuffix(cond.Message, " shortly after being applied (missing: 203.0.113.1); restoring them after a 500ms cooldown.") {
+			t.Errorf("condition = %+v, want Drifted", cond)
+		}
+
+		after(c.nodeQueue, minCooldown)
+		writes, got = h.converge(c.reconcile, "edge-1")
+
+		// Addresses, Applied condition.
+		if writes != 2 {
+			t.Errorf("writes = %d, want 2", writes)
+		}
+		if want := []corev1.NodeAddress{ext}; !reflect.DeepEqual(got.Status.Addresses, want) {
+			t.Errorf("addresses = %+v, want %+v", got.Status.Addresses, want)
+		}
+		if cond := condition(got, ExternalIPsAppliedConditionType); cond == nil || cond.Reason != "Applied" {
+			t.Errorf("condition = %+v, want Applied", cond)
+		}
+	})
 }

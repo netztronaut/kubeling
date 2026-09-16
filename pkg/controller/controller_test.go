@@ -37,6 +37,8 @@ type harness struct {
 	t      *testing.T
 	client *fake.Clientset
 	nodes  corev1informers.NodeInformer
+	// queue is the nodeQueue of the controller built last, if any.
+	queue *nodeQueue
 }
 
 func newHarness(t *testing.T, nodes ...*corev1.Node) *harness {
@@ -114,6 +116,12 @@ var (
 	errConflict = apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, "node", errors.New("object has been modified"))
 	errInternal = apierrors.NewInternalError(errors.New("etcd is on fire"))
 )
+
+// after moves q's flap detector clock d ahead of the wall clock, which
+// condition timestamps still come from.
+func after(q *nodeQueue, d time.Duration) {
+	q.flaps.now = func() time.Time { return time.Now().Add(d) }
+}
 
 func node(name string, labels map[string]string) *corev1.Node {
 	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}

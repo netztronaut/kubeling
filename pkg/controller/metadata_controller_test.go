@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -270,6 +271,7 @@ var metadataDomains = []metadataDomainCase{
 			if err != nil {
 				h.t.Fatal(err)
 			}
+			h.queue = c.nodeQueue
 			return c.reconcile
 		},
 		config: func(rules map[string]metadataRule) config.Config {
@@ -291,6 +293,7 @@ var metadataDomains = []metadataDomainCase{
 			if err != nil {
 				h.t.Fatal(err)
 			}
+			h.queue = c.nodeQueue
 			return c.reconcile
 		},
 		config: func(rules map[string]metadataRule) config.Config {
@@ -330,7 +333,9 @@ func TestMetadataControllerScenarios(t *testing.T) {
 		{"rules that only conflict are reported as Applied without writing values", testMetadataOnlyConflicts},
 		{"matching rule without values is Applied", testMetadataRuleWithoutValues},
 		{"newly matching rule with satisfied values only updates the message", testMetadataNewlyMatchingRule},
-		{"drifted values are restored", testMetadataRestoresDrift},
+		{"values changed after holding are restored while staying Applied", testMetadataRestoresDrift},
+		{"values changed right after being applied are restored after a cooldown", testMetadataCoolsDownFlaps},
+		{"changed rules go through Pending instead of a cooldown", testMetadataRuleChangeIsNoFlap},
 		{"an already Pending node goes straight to writing values", testMetadataAlreadyPending},
 		{"rule removed while Pending clears the condition", testMetadataRemovedWhilePending},
 		{"write errors", testMetadataWriteErrors},
@@ -472,10 +477,13 @@ func testMetadataNewlyMatchingRule(t *testing.T, d metadataDomainCase) {
 	}
 }
 
-func testMetadataRestoresDrift(t *testing.T, d metadataDomainCase) {
+// tamper applies a rule to edge-1 and then changes its value behind the
+// controller's back, the way another controller fighting over it would.
+func tamper(t *testing.T, d metadataDomainCase) (*harness, func(context.Context, string) error) {
+	t.Helper()
 	h := newHarness(t, edgeNode(d, nil))
 	reconcile := d.newReconcile(h, &staticConfig{d.config(map[string]metadataRule{
-		"edge": {match: edgeSelector, values: map[string]string{"environment": "production"}},
+		"edge": {match: edgeSelector, values: map[string]string{"environment": "production", "rack": "r42"}},
 	})})
 	_, got := h.converge(reconcile, "edge-1")
 
@@ -484,14 +492,85 @@ func testMetadataRestoresDrift(t *testing.T, d metadataDomainCase) {
 		t.Fatal(err)
 	}
 	h.sync("edge-1")
+	return h, reconcile
+}
+
+func testMetadataRestoresDrift(t *testing.T, d metadataDomainCase) {
+	h, reconcile := tamper(t, d)
+	after(h.queue, flapWindow+time.Second)
+
 	writes, got := h.converge(reconcile, "edge-1")
 
-	// Pending, values, Applied.
-	if writes != 3 {
-		t.Errorf("writes = %d, want 3", writes)
+	// Values only: the condition never leaves Applied.
+	if writes != 1 {
+		t.Errorf("writes = %d, want 1", writes)
 	}
-	if d.get(got)["environment"] != "production" {
-		t.Errorf("%s = %v, want environment=production", d.name, d.get(got))
+	if want := map[string]string{"environment": "production", "rack": "r42"}; !reflect.DeepEqual(d.get(got), want) {
+		t.Errorf("%s = %v, want %v", d.name, d.get(got), want)
+	}
+	if c := condition(got, d.conditionType); c == nil || c.Reason != "Applied" {
+		t.Errorf("condition = %+v, want Applied", c)
+	}
+}
+
+func testMetadataCoolsDownFlaps(t *testing.T, d metadataDomainCase) {
+	h, reconcile := tamper(t, d)
+
+	writes, got := h.converge(reconcile, "edge-1")
+
+	// Drifted condition, then nothing until the cooldown has passed.
+	if writes != 1 || d.get(got)["environment"] != "tampered" {
+		t.Errorf("writes = %d, %s = %v; want 1 write and values left alone", writes, d.name, d.get(got))
+	}
+	c := condition(got, d.conditionType)
+	if c == nil || c.Status != corev1.ConditionFalse || c.Reason != "Drifted" ||
+		!strings.HasSuffix(c.Message, " shortly after being applied (missing: rack; changed: environment); restoring them after a 500ms cooldown.") {
+		t.Fatalf("condition = %+v, want Drifted", c)
+	}
+	if strings.Contains(c.Message, "production") || strings.Contains(c.Message, "tampered") {
+		t.Errorf("condition message leaks values: %q", c.Message)
+	}
+
+	after(h.queue, minCooldown)
+	writes, got = h.converge(reconcile, "edge-1")
+
+	// Values, Applied condition.
+	if writes != 2 {
+		t.Errorf("writes = %d, want 2", writes)
+	}
+	if want := map[string]string{"environment": "production", "rack": "r42"}; !reflect.DeepEqual(d.get(got), want) {
+		t.Errorf("%s = %v, want %v", d.name, d.get(got), want)
+	}
+	if c := condition(got, d.conditionType); c == nil || c.Reason != "Applied" {
+		t.Errorf("condition = %+v, want Applied", c)
+	}
+}
+
+func testMetadataRuleChangeIsNoFlap(t *testing.T, d metadataDomainCase) {
+	h := newHarness(t, edgeNode(d, nil))
+	source := &staticConfig{d.config(map[string]metadataRule{
+		"edge": {match: edgeSelector, values: map[string]string{"environment": "production"}},
+	})}
+	reconcile := d.newReconcile(h, source)
+	h.converge(reconcile, "edge-1")
+
+	source.cfg = d.config(map[string]metadataRule{
+		"edge": {match: edgeSelector, values: map[string]string{"environment": "staging"}},
+	})
+	if err := reconcile(context.Background(), "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	if c := condition(h.sync("edge-1"), d.conditionType); c == nil || c.Reason != "Pending" {
+		t.Fatalf("condition = %+v, want Pending", c)
+	}
+	writes, got := h.converge(reconcile, "edge-1")
+
+	// Values, Applied condition, without waiting for a cooldown.
+	if writes != 2 || d.get(got)["environment"] != "staging" {
+		t.Errorf("writes = %d, %s = %v; want 2 writes and environment=staging", writes, d.name, d.get(got))
+	}
+	if c := condition(got, d.conditionType); c == nil || c.Reason != "Applied" {
+		t.Errorf("condition = %+v, want Applied", c)
 	}
 }
 

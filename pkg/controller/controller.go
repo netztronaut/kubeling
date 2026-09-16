@@ -39,6 +39,7 @@ type nodeQueue struct {
 	lister    corev1listers.NodeLister
 	synced    cache.InformerSynced
 	queue     workqueue.TypedRateLimitingInterface[string]
+	flaps     *flapDetector
 	reconcile func(ctx context.Context, nodeName string) error
 }
 
@@ -48,6 +49,7 @@ func newNodeQueue(name string, nodes corev1informers.NodeInformer, reconcile fun
 		lister:    nodes.Lister(),
 		synced:    nodes.Informer().HasSynced,
 		reconcile: reconcile,
+		flaps:     newFlapDetector(),
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: name},
@@ -57,6 +59,8 @@ func newNodeQueue(name string, nodes corev1informers.NodeInformer, reconcile fun
 	_, err := nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    q.enqueue,
 		UpdateFunc: func(_, obj any) { q.enqueue(obj) },
+		// Deleted Nodes need no reconciling, only forgetting.
+		DeleteFunc: q.forget,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("registering %s controller event handler: %w", name, err)
@@ -71,6 +75,15 @@ func (q *nodeQueue) enqueue(obj any) {
 		return
 	}
 	q.queue.Add(key)
+}
+
+func (q *nodeQueue) forget(obj any) {
+	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+	if err != nil {
+		utilruntime.HandleError(err)
+		return
+	}
+	q.flaps.forget(key)
 }
 
 // EnqueueAll re-evaluates every known Node, e.g. after the configuration
