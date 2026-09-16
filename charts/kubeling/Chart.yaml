@@ -2,7 +2,7 @@ apiVersion: v2
 name: kubeling
 description: A cloud-controller-manager companion that applies externalIPs, labels and annotations to Nodes from rules in a ConfigMap, and initializes Nodes in clusters without a cloud.
 type: application
-version: 0.3.0
+version: 0.4.0
 appVersion: "latest"
 home: https://github.com/netztronaut/kubeling
 sources:

@@ -95,7 +95,7 @@ released chart deploys the image tag matching its own version:
 ```sh
 helm install kubeling oci://ghcr.io/netztronaut/charts/kubeling \
   --namespace kube-system \
-  --version 0.3.0
+  --version 0.4.0
 ```
 
 Upgrade an existing installation to the latest release (or to a pinned one
