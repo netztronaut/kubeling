@@ -49,7 +49,7 @@ The repository is hosted on GitHub at `github.com/netztronaut/kubeling` and
 mirrored to a private Forgejo instance. CI just runs `make check` on
 `runs-on: ubuntu-latest`, in `.github/workflows/ci.yml` and, for the mirror,
 `.forgejo/workflows/ci.yml`. Lint rules live in `.golangci.yml` (notably:
-use `slices`, not `sort`). `go.mod` pins `toolchain go1.26.8` because the
+use `slices`, not `sort`). `go.mod` pins `toolchain go1.26.11` because the
 auto-selected go1.26.0 toolchain breaks coverage builds.
 
 ## Releasing
