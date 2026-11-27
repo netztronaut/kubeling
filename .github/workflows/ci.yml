@@ -25,7 +25,7 @@ jobs:
 
       - uses: azure/setup-helm@v5
         with:
-          version: v4.1.4
+          version: v4.3.2
 
       # golangci-lint is built from source into bin/ by the Makefile; cache
       # it by the Makefile, which pins its version.

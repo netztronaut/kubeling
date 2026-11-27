@@ -13,7 +13,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     env:
-      HELM_VERSION: v4.1.4
+      HELM_VERSION: v4.3.2
     steps:
       - uses: actions/checkout@v4
 
